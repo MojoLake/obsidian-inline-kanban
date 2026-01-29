@@ -293,16 +293,6 @@ function moveColumn(
   columns.splice(insertIndex, 0, moved);
 }
 
-function getColumnInsertIndex(
-  event: DragEvent,
-  columnIndex: number,
-  columnEl: HTMLElement,
-): number {
-  const rect = columnEl.getBoundingClientRect();
-  const isAfter = event.clientX > rect.left + rect.width / 2;
-  return isAfter ? columnIndex + 1 : columnIndex;
-}
-
 function renderKanbanBoard(
   board: KanbanBoard,
   container: HTMLElement,
@@ -339,6 +329,70 @@ function renderKanbanBoard(
     updateBoard(nextBoard);
     rerender(nextBoard);
   };
+
+  const clearColumnIndicators = (): void => {
+    dropIndicator.style.opacity = "0";
+  };
+
+  const getColumnDropInfo = (
+    clientX: number,
+  ): {
+    insertIndex: number;
+    indicatorLeft: number;
+  } | null => {
+    const columns = Array.from(
+      boardEl.querySelectorAll<HTMLElement>(".kanban-column"),
+    );
+    if (columns.length === 0) return null;
+    const boardRect = boardEl.getBoundingClientRect();
+
+    for (let i = 0; i < columns.length; i += 1) {
+      const rect = columns[i].getBoundingClientRect();
+      if (clientX < rect.left + rect.width / 2) {
+        return {
+          insertIndex: i,
+          indicatorLeft: rect.left - boardRect.left + boardEl.scrollLeft,
+        };
+      }
+    }
+
+    const lastRect = columns[columns.length - 1].getBoundingClientRect();
+    return {
+      insertIndex: columns.length,
+      indicatorLeft: lastRect.right - boardRect.left + boardEl.scrollLeft,
+    };
+  };
+
+  const showColumnIndicatorAt = (clientX: number): void => {
+    const info = getColumnDropInfo(clientX);
+    if (!info) return;
+    dropIndicator.style.left = `${Math.max(0, info.indicatorLeft - 2)}px`;
+    dropIndicator.style.opacity = "1";
+  };
+
+  boardEl.addEventListener("dragover", (event) => {
+    if (!hasTransferType(event, "application/x-inline-kanban-column")) return;
+    event.preventDefault();
+    showColumnIndicatorAt(event.clientX);
+  });
+
+  boardEl.addEventListener("dragleave", (event) => {
+    if (!boardEl.contains(event.relatedTarget as Node | null)) {
+      clearColumnIndicators();
+    }
+  });
+
+  boardEl.addEventListener("drop", (event) => {
+    const columnPayload = readColumnDragPayload(event);
+    if (!columnPayload) return;
+    event.preventDefault();
+    clearColumnIndicators();
+    const info = getColumnDropInfo(event.clientX);
+    if (!info) return;
+    const nextBoard = cloneBoard(board);
+    moveColumn(nextBoard, columnPayload.columnIndex, info.insertIndex);
+    updateAndRerender(nextBoard);
+  });
 
   const addColumnButton = document.createElement("button");
   addColumnButton.className = "kanban-add-column";
@@ -417,22 +471,6 @@ function renderKanbanBoard(
       columnEl.classList.toggle("is-drag-over", isOver);
     };
 
-    const clearColumnIndicators = (): void => {
-      dropIndicator.style.opacity = "0";
-    };
-
-    const showColumnIndicator = (
-      targetEl: HTMLElement,
-      isAfter: boolean,
-    ): void => {
-      const boardRect = boardEl.getBoundingClientRect();
-      const targetRect = targetEl.getBoundingClientRect();
-      const left = isAfter ? targetRect.right : targetRect.left;
-      const offsetLeft = left - boardRect.left + boardEl.scrollLeft;
-      dropIndicator.style.left = `${Math.max(0, offsetLeft - 2)}px`;
-      dropIndicator.style.opacity = "1";
-    };
-
     dragHandle.addEventListener("dragstart", (event) => {
       if (!event.dataTransfer) return;
       event.dataTransfer.setData(
@@ -454,9 +492,11 @@ function renderKanbanBoard(
       clearColumnIndicators();
       const columnPayload = readColumnDragPayload(event);
       if (columnPayload) {
+        event.stopPropagation();
         const nextBoard = cloneBoard(board);
-        const targetIndex = getColumnInsertIndex(event, columnIndex, columnEl);
-        moveColumn(nextBoard, columnPayload.columnIndex, targetIndex);
+        const info = getColumnDropInfo(event.clientX);
+        if (!info) return;
+        moveColumn(nextBoard, columnPayload.columnIndex, info.insertIndex);
         updateAndRerender(nextBoard);
         return;
       }
@@ -484,9 +524,7 @@ function renderKanbanBoard(
       event.preventDefault();
       if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
       if (hasTransferType(event, "application/x-inline-kanban-column")) {
-        const rect = columnEl.getBoundingClientRect();
-        const isAfter = event.clientX > rect.left + rect.width / 2;
-        showColumnIndicator(columnEl, isAfter);
+        showColumnIndicatorAt(event.clientX);
         setDragOver(false);
         return;
       }
@@ -539,12 +577,9 @@ function renderKanbanBoard(
         const columnPayload = readColumnDragPayload(event);
         if (columnPayload) {
           const nextBoard = cloneBoard(board);
-          const targetIndex = getColumnInsertIndex(
-            event,
-            columnIndex,
-            columnEl,
-          );
-          moveColumn(nextBoard, columnPayload.columnIndex, targetIndex);
+          const info = getColumnDropInfo(event.clientX);
+          if (!info) return;
+          moveColumn(nextBoard, columnPayload.columnIndex, info.insertIndex);
           updateAndRerender(nextBoard);
           return;
         }
