@@ -21,13 +21,21 @@ type KanbanBoard = {
 };
 
 const DEFAULT_COLUMN = "Uncategorized";
+const HIGHLIGHT_DURATION_MS = 900;
+const pendingColumnHighlights = new Map<
+  string,
+  { name: string; expiresAt: number }
+>();
 
 export default class InlineKanbanPlugin extends Plugin {
   onload(): void {
     this.registerMarkdownCodeBlockProcessor("kanban", (source, el, ctx) => {
       const board = parseKanbanSource(source);
       const updateBoard = createBoardUpdater(this.app, ctx, el);
-      renderKanbanBoard(board, el, updateBoard, this.app);
+      const highlightColumnName = getPendingColumnHighlight(ctx.sourcePath);
+      renderKanbanBoard(board, el, updateBoard, this.app, {
+        highlightColumnName,
+      });
     });
   }
 }
@@ -146,6 +154,25 @@ function normalizeKey(value: string): string {
   return value.trim().toLowerCase();
 }
 
+function setPendingColumnHighlight(path: string, name: string): void {
+  if (!path || !name) return;
+  pendingColumnHighlights.set(path, {
+    name,
+    expiresAt: Date.now() + HIGHLIGHT_DURATION_MS,
+  });
+}
+
+function getPendingColumnHighlight(path: string): string | undefined {
+  if (!path) return undefined;
+  const entry = pendingColumnHighlights.get(path);
+  if (!entry) return undefined;
+  if (Date.now() > entry.expiresAt) {
+    pendingColumnHighlights.delete(path);
+    return undefined;
+  }
+  return entry.name;
+}
+
 function cloneBoard(board: KanbanBoard): KanbanBoard {
   return {
     columns: board.columns.map((column) => ({
@@ -176,9 +203,12 @@ function createBoardUpdater(
   app: App,
   ctx: MarkdownPostProcessorContext,
   container: HTMLElement,
-): (board: KanbanBoard) => void {
+): (board: KanbanBoard, highlightColumnName?: string) => void {
   let queue = Promise.resolve();
-  return (board: KanbanBoard) => {
+  return (board: KanbanBoard, highlightColumnName?: string) => {
+    if (highlightColumnName) {
+      setPendingColumnHighlight(ctx.sourcePath, highlightColumnName);
+    }
     const source = serializeKanbanBoard(board);
     queue = queue
       .then(() => updateBlockSource(app, ctx, container, source))
@@ -300,7 +330,7 @@ type RenderOptions = {
 function renderKanbanBoard(
   board: KanbanBoard,
   container: HTMLElement,
-  updateBoard: (board: KanbanBoard) => void,
+  updateBoard: (board: KanbanBoard, highlightColumnName?: string) => void,
   app: App,
   options: RenderOptions = {},
 ): void {
@@ -335,10 +365,10 @@ function renderKanbanBoard(
 
   const updateAndRerender = (
     nextBoard: KanbanBoard,
-    nextOptions: RenderOptions = {},
+    highlightColumnName?: string,
   ): void => {
-    updateBoard(nextBoard);
-    rerender(nextBoard, nextOptions);
+    updateBoard(nextBoard, highlightColumnName);
+    rerender(nextBoard, highlightColumnName ? { highlightColumnName } : {});
   };
 
   const clearColumnIndicators = (): void => {
@@ -403,10 +433,7 @@ function renderKanbanBoard(
     const nextBoard = cloneBoard(board);
     const movedName = nextBoard.columns[columnPayload.columnIndex]?.name;
     moveColumn(nextBoard, columnPayload.columnIndex, info.insertIndex);
-    updateAndRerender(
-      nextBoard,
-      movedName ? { highlightColumnName: movedName } : {},
-    );
+    updateAndRerender(nextBoard, movedName);
   });
 
   const addColumnButton = document.createElement("button");
@@ -520,10 +547,7 @@ function renderKanbanBoard(
         if (!info) return;
         const movedName = nextBoard.columns[columnPayload.columnIndex]?.name;
         moveColumn(nextBoard, columnPayload.columnIndex, info.insertIndex);
-        updateAndRerender(
-          nextBoard,
-          movedName ? { highlightColumnName: movedName } : {},
-        );
+        updateAndRerender(nextBoard, movedName);
         return;
       }
 
@@ -607,10 +631,7 @@ function renderKanbanBoard(
           if (!info) return;
           const movedName = nextBoard.columns[columnPayload.columnIndex]?.name;
           moveColumn(nextBoard, columnPayload.columnIndex, info.insertIndex);
-          updateAndRerender(
-            nextBoard,
-            movedName ? { highlightColumnName: movedName } : {},
-          );
+          updateAndRerender(nextBoard, movedName);
           return;
         }
 
