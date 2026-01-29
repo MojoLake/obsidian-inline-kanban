@@ -319,6 +319,10 @@ function renderKanbanBoard(
   boardEl.className = "kanban-board";
   container.appendChild(boardEl);
 
+  const dropIndicator = document.createElement("div");
+  dropIndicator.className = "kanban-drop-indicator";
+  boardEl.appendChild(dropIndicator);
+
   if (board.columns.length === 0) {
     const empty = document.createElement("div");
     empty.className = "kanban-empty";
@@ -368,7 +372,15 @@ function renderKanbanBoard(
 
     const header = document.createElement("div");
     header.className = "kanban-column-header";
-    header.setAttribute("draggable", "true");
+
+    const dragHandle = document.createElement("button");
+    dragHandle.className = "kanban-column-drag-handle";
+    dragHandle.type = "button";
+    dragHandle.textContent = ":::";
+    dragHandle.setAttribute("draggable", "true");
+    dragHandle.setAttribute("aria-label", "Reorder column");
+    header.appendChild(dragHandle);
+
     const title = document.createElement("span");
     title.className = "kanban-column-title";
     title.textContent = column.name;
@@ -405,7 +417,23 @@ function renderKanbanBoard(
       columnEl.classList.toggle("is-drag-over", isOver);
     };
 
-    header.addEventListener("dragstart", (event) => {
+    const clearColumnIndicators = (): void => {
+      dropIndicator.style.opacity = "0";
+    };
+
+    const showColumnIndicator = (
+      targetEl: HTMLElement,
+      isAfter: boolean,
+    ): void => {
+      const boardRect = boardEl.getBoundingClientRect();
+      const targetRect = targetEl.getBoundingClientRect();
+      const left = isAfter ? targetRect.right : targetRect.left;
+      const offsetLeft = left - boardRect.left + boardEl.scrollLeft;
+      dropIndicator.style.left = `${Math.max(0, offsetLeft - 2)}px`;
+      dropIndicator.style.opacity = "1";
+    };
+
+    dragHandle.addEventListener("dragstart", (event) => {
       if (!event.dataTransfer) return;
       event.dataTransfer.setData(
         "application/x-inline-kanban-column",
@@ -415,13 +443,15 @@ function renderKanbanBoard(
       event.dataTransfer.effectAllowed = "move";
       columnEl.classList.add("is-column-dragging");
     });
-    header.addEventListener("dragend", () => {
+    dragHandle.addEventListener("dragend", () => {
       columnEl.classList.remove("is-column-dragging");
+      clearColumnIndicators();
     });
 
     const handleColumnDrop = (event: DragEvent): void => {
       event.preventDefault();
       setDragOver(false);
+      clearColumnIndicators();
       const columnPayload = readColumnDragPayload(event);
       if (columnPayload) {
         const nextBoard = cloneBoard(board);
@@ -446,16 +476,28 @@ function renderKanbanBoard(
 
     columnEl.addEventListener("dragenter", (event) => {
       event.preventDefault();
-      setDragOver(true);
+      if (hasTransferType(event, "application/x-inline-kanban-card")) {
+        setDragOver(true);
+      }
     });
     columnEl.addEventListener("dragover", (event) => {
       event.preventDefault();
       if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+      if (hasTransferType(event, "application/x-inline-kanban-column")) {
+        const rect = columnEl.getBoundingClientRect();
+        const isAfter = event.clientX > rect.left + rect.width / 2;
+        showColumnIndicator(columnEl, isAfter);
+        setDragOver(false);
+        return;
+      }
+
+      clearColumnIndicators();
       setDragOver(true);
     });
     columnEl.addEventListener("dragleave", (event) => {
       if (!columnEl.contains(event.relatedTarget as Node | null)) {
         setDragOver(false);
+        clearColumnIndicators();
       }
     });
     columnEl.addEventListener("drop", handleColumnDrop);
@@ -479,6 +521,10 @@ function renderKanbanBoard(
         event.preventDefault();
         event.stopPropagation();
         if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+        if (hasTransferType(event, "application/x-inline-kanban-column")) {
+          card.classList.remove("is-drag-over");
+          return;
+        }
         card.classList.add("is-drag-over");
       });
       card.addEventListener("dragleave", () => {
@@ -489,6 +535,7 @@ function renderKanbanBoard(
         event.stopPropagation();
         card.classList.remove("is-drag-over");
         setDragOver(false);
+        clearColumnIndicators();
         const columnPayload = readColumnDragPayload(event);
         if (columnPayload) {
           const nextBoard = cloneBoard(board);
@@ -549,6 +596,12 @@ function readCardDragPayload(event: DragEvent): {
   } catch {
     return null;
   }
+}
+
+function hasTransferType(event: DragEvent, type: string): boolean {
+  const types = event.dataTransfer?.types;
+  if (!types) return false;
+  return Array.from(types).includes(type);
 }
 
 function readColumnDragPayload(
