@@ -21,6 +21,11 @@ items:
 
 You can place any normal Markdown before, between, or after kanban blocks.
 
+## Interactions
+
+- Use the `+` button in a column header to add a card.
+- Drag cards between columns to change status.
+
 ## Development
 
 ```bash

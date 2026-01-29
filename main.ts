@@ -1,4 +1,10 @@
-import { Plugin } from "obsidian";
+import {
+  App,
+  MarkdownPostProcessorContext,
+  Modal,
+  Plugin,
+  TFile,
+} from "obsidian";
 
 type KanbanItem = {
   status: string;
@@ -18,9 +24,10 @@ const DEFAULT_COLUMN = "Uncategorized";
 
 export default class InlineKanbanPlugin extends Plugin {
   onload(): void {
-    this.registerMarkdownCodeBlockProcessor("kanban", (source, el) => {
+    this.registerMarkdownCodeBlockProcessor("kanban", (source, el, ctx) => {
       const board = parseKanbanSource(source);
-      renderKanbanBoard(board, el);
+      const updateBoard = createBoardUpdater(this.app, ctx, el);
+      renderKanbanBoard(board, el, updateBoard, this.app);
     });
   }
 }
@@ -139,7 +146,112 @@ function normalizeKey(value: string): string {
   return value.trim().toLowerCase();
 }
 
-function renderKanbanBoard(board: KanbanBoard, container: HTMLElement): void {
+function cloneBoard(board: KanbanBoard): KanbanBoard {
+  return {
+    columns: board.columns.map((column) => ({
+      name: column.name,
+      items: [...column.items],
+    })),
+  };
+}
+
+function serializeKanbanBoard(board: KanbanBoard): string {
+  const lines: string[] = [];
+  lines.push("columns:");
+  for (const column of board.columns) {
+    lines.push(`  - ${column.name}`);
+  }
+  lines.push("items:");
+  for (const column of board.columns) {
+    for (const item of column.items) {
+      const text = item.trim();
+      if (!text) continue;
+      lines.push(`  - [${column.name}] ${text}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+function createBoardUpdater(
+  app: App,
+  ctx: MarkdownPostProcessorContext,
+  container: HTMLElement,
+): (board: KanbanBoard) => void {
+  let queue = Promise.resolve();
+  return (board: KanbanBoard) => {
+    const source = serializeKanbanBoard(board);
+    queue = queue
+      .then(() => updateBlockSource(app, ctx, container, source))
+      .catch((error) => {
+        console.error("Inline Kanban update failed", error);
+      });
+  };
+}
+
+async function updateBlockSource(
+  app: App,
+  ctx: MarkdownPostProcessorContext,
+  container: HTMLElement,
+  source: string,
+): Promise<void> {
+  const section = ctx.getSectionInfo(container);
+  if (!section) return;
+
+  const file = app.vault.getAbstractFileByPath(ctx.sourcePath);
+  if (!(file instanceof TFile)) return;
+
+  const contents = await app.vault.read(file);
+  const lines = contents.split(/\r?\n/);
+  const start = section.lineStart;
+  const end = section.lineEnd;
+
+  if (start == null || end == null || start >= lines.length) return;
+
+  const openIndex = findOpenFence(lines, start, end);
+  const closeIndex = findCloseFence(lines, start, end);
+  if (openIndex === -1 || closeIndex === -1 || openIndex >= closeIndex) return;
+
+  const newLines = source ? source.split(/\r?\n/) : [];
+  const nextContents = [
+    ...lines.slice(0, openIndex + 1),
+    ...newLines,
+    ...lines.slice(closeIndex),
+  ].join("\n");
+
+  if (nextContents !== contents) {
+    await app.vault.modify(file, nextContents);
+  }
+}
+
+function findOpenFence(lines: string[], start: number, end: number): number {
+  for (let i = start; i <= end && i < lines.length; i += 1) {
+    if (isKanbanFenceLine(lines[i])) return i;
+  }
+  return -1;
+}
+
+function findCloseFence(lines: string[], start: number, end: number): number {
+  for (let i = Math.min(end, lines.length - 1); i >= start; i -= 1) {
+    if (isFenceLine(lines[i])) return i;
+  }
+  return -1;
+}
+
+function isKanbanFenceLine(line: string): boolean {
+  return /^(```|~~~)\s*kanban(\s|$)/i.test(line.trim());
+}
+
+function isFenceLine(line: string): boolean {
+  return /^(```|~~~)/.test(line.trim());
+}
+
+function renderKanbanBoard(
+  board: KanbanBoard,
+  container: HTMLElement,
+  updateBoard: (board: KanbanBoard) => void,
+  app: App,
+): void {
+  container.innerHTML = "";
   container.classList.add("inline-kanban");
   const boardEl = document.createElement("div");
   boardEl.className = "kanban-board";
@@ -153,24 +265,169 @@ function renderKanbanBoard(board: KanbanBoard, container: HTMLElement): void {
     return;
   }
 
-  for (const column of board.columns) {
+  const rerender = (nextBoard: KanbanBoard): void => {
+    renderKanbanBoard(nextBoard, container, updateBoard, app);
+  };
+
+  const updateAndRerender = (nextBoard: KanbanBoard): void => {
+    updateBoard(nextBoard);
+    rerender(nextBoard);
+  };
+
+  board.columns.forEach((column, columnIndex) => {
     const columnEl = document.createElement("div");
     columnEl.className = "kanban-column";
     boardEl.appendChild(columnEl);
 
     const header = document.createElement("div");
     header.className = "kanban-column-header";
-    header.textContent = column.name;
+    const title = document.createElement("span");
+    title.className = "kanban-column-title";
+    title.textContent = column.name;
+    header.appendChild(title);
+
+    const addButton = document.createElement("button");
+    addButton.className = "kanban-add-card";
+    addButton.type = "button";
+    addButton.textContent = "+";
+    addButton.addEventListener("click", () => {
+      const modal = new AddCardModal(app, column.name, (text) => {
+        const nextBoard = cloneBoard(board);
+        nextBoard.columns[columnIndex]?.items.push(text.trim());
+        updateAndRerender(nextBoard);
+      });
+      modal.open();
+    });
+    header.appendChild(addButton);
     columnEl.appendChild(header);
 
     const list = document.createElement("div");
     list.className = "kanban-column-items";
     columnEl.appendChild(list);
-    for (const item of column.items) {
+    const setDragOver = (isOver: boolean): void => {
+      list.classList.toggle("is-drag-over", isOver);
+    };
+
+    const handleDrop = (event: DragEvent): void => {
+      event.preventDefault();
+      setDragOver(false);
+      const payload = readDragPayload(event);
+      if (!payload) return;
+      const nextBoard = cloneBoard(board);
+      const sourceColumn = nextBoard.columns[payload.columnIndex];
+      if (!sourceColumn) return;
+      const [moved] = sourceColumn.items.splice(payload.itemIndex, 1);
+      if (!moved) return;
+      const targetColumn = nextBoard.columns[columnIndex];
+      if (!targetColumn) return;
+      targetColumn.items.push(moved);
+      updateAndRerender(nextBoard);
+    };
+
+    columnEl.addEventListener("dragenter", (event) => {
+      event.preventDefault();
+      setDragOver(true);
+    });
+    columnEl.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+      setDragOver(true);
+    });
+    columnEl.addEventListener("dragleave", (event) => {
+      if (!columnEl.contains(event.relatedTarget as Node | null)) {
+        setDragOver(false);
+      }
+    });
+    columnEl.addEventListener("drop", handleDrop);
+
+    column.items.forEach((item, itemIndex) => {
       const card = document.createElement("div");
       card.className = "kanban-card";
       card.textContent = item;
+      card.setAttribute("draggable", "true");
+      card.addEventListener("dragstart", (event) => {
+        if (!event.dataTransfer) return;
+        event.dataTransfer.setData(
+          "application/x-inline-kanban",
+          JSON.stringify({ columnIndex, itemIndex }),
+        );
+        event.dataTransfer.setData("text/plain", "inline-kanban");
+        event.dataTransfer.effectAllowed = "move";
+        card.classList.add("is-dragging");
+      });
+      card.addEventListener("dragend", () => {
+        card.classList.remove("is-dragging");
+      });
       list.appendChild(card);
+    });
+  });
+}
+
+function readDragPayload(event: DragEvent): {
+  columnIndex: number;
+  itemIndex: number;
+} | null {
+  if (!event.dataTransfer) return null;
+  const raw =
+    event.dataTransfer.getData("application/x-inline-kanban") ||
+    event.dataTransfer.getData("text/plain");
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as {
+      columnIndex: number;
+      itemIndex: number;
+    };
+    if (
+      typeof parsed.columnIndex !== "number" ||
+      typeof parsed.itemIndex !== "number"
+    ) {
+      return null;
     }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+class AddCardModal extends Modal {
+  private readonly columnName: string;
+  private readonly onSubmit: (text: string) => void;
+
+  constructor(app: App, columnName: string, onSubmit: (text: string) => void) {
+    super(app);
+    this.columnName = columnName;
+    this.onSubmit = onSubmit;
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h3", {
+      text: `Add card to "${this.columnName}"`,
+    });
+
+    const input = contentEl.createEl("input", {
+      type: "text",
+      cls: "kanban-add-input",
+    });
+    input.focus();
+
+    const actions = contentEl.createDiv({ cls: "kanban-add-actions" });
+    const addButton = actions.createEl("button", { text: "Add" });
+    const cancelButton = actions.createEl("button", { text: "Cancel" });
+
+    const submit = (): void => {
+      const value = input.value.trim();
+      if (!value) return;
+      this.onSubmit(value);
+      this.close();
+    };
+
+    addButton.addEventListener("click", submit);
+    cancelButton.addEventListener("click", () => this.close());
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") submit();
+      if (event.key === "Escape") this.close();
+    });
   }
 }
