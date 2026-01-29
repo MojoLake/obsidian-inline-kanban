@@ -62,6 +62,10 @@
   opacity: 0.7;
 }
 
+.inline-kanban .kanban-column.is-column-highlight {
+  animation: kanban-column-highlight 320ms ease;
+}
+
 .inline-kanban .kanban-column-header {
   display: flex;
   align-items: center;
@@ -91,6 +95,21 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+@keyframes kanban-column-highlight {
+  0% {
+    transform: scale(0.98);
+    box-shadow: 0 0 0 0 var(--interactive-accent);
+  }
+  50% {
+    transform: scale(1.01);
+    box-shadow: 0 0 0 3px var(--interactive-accent);
+  }
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 var(--interactive-accent);
+  }
 }
 
 .inline-kanban .kanban-add-card {

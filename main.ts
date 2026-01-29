@@ -293,11 +293,16 @@ function moveColumn(
   columns.splice(insertIndex, 0, moved);
 }
 
+type RenderOptions = {
+  highlightColumnName?: string;
+};
+
 function renderKanbanBoard(
   board: KanbanBoard,
   container: HTMLElement,
   updateBoard: (board: KanbanBoard) => void,
   app: App,
+  options: RenderOptions = {},
 ): void {
   container.innerHTML = "";
   container.classList.add("inline-kanban");
@@ -321,13 +326,19 @@ function renderKanbanBoard(
     return;
   }
 
-  const rerender = (nextBoard: KanbanBoard): void => {
-    renderKanbanBoard(nextBoard, container, updateBoard, app);
+  const rerender = (
+    nextBoard: KanbanBoard,
+    nextOptions: RenderOptions = {},
+  ): void => {
+    renderKanbanBoard(nextBoard, container, updateBoard, app, nextOptions);
   };
 
-  const updateAndRerender = (nextBoard: KanbanBoard): void => {
+  const updateAndRerender = (
+    nextBoard: KanbanBoard,
+    nextOptions: RenderOptions = {},
+  ): void => {
     updateBoard(nextBoard);
-    rerender(nextBoard);
+    rerender(nextBoard, nextOptions);
   };
 
   const clearColumnIndicators = (): void => {
@@ -390,8 +401,12 @@ function renderKanbanBoard(
     const info = getColumnDropInfo(event.clientX);
     if (!info) return;
     const nextBoard = cloneBoard(board);
+    const movedName = nextBoard.columns[columnPayload.columnIndex]?.name;
     moveColumn(nextBoard, columnPayload.columnIndex, info.insertIndex);
-    updateAndRerender(nextBoard);
+    updateAndRerender(
+      nextBoard,
+      movedName ? { highlightColumnName: movedName } : {},
+    );
   });
 
   const addColumnButton = document.createElement("button");
@@ -419,9 +434,16 @@ function renderKanbanBoard(
   });
   toolbar.appendChild(addColumnButton);
 
+  const highlightKey = options.highlightColumnName
+    ? normalizeKey(options.highlightColumnName)
+    : null;
+
   board.columns.forEach((column, columnIndex) => {
     const columnEl = document.createElement("div");
     columnEl.className = "kanban-column";
+    if (highlightKey && normalizeKey(column.name) === highlightKey) {
+      columnEl.classList.add("is-column-highlight");
+    }
     boardEl.appendChild(columnEl);
 
     const header = document.createElement("div");
@@ -496,8 +518,12 @@ function renderKanbanBoard(
         const nextBoard = cloneBoard(board);
         const info = getColumnDropInfo(event.clientX);
         if (!info) return;
+        const movedName = nextBoard.columns[columnPayload.columnIndex]?.name;
         moveColumn(nextBoard, columnPayload.columnIndex, info.insertIndex);
-        updateAndRerender(nextBoard);
+        updateAndRerender(
+          nextBoard,
+          movedName ? { highlightColumnName: movedName } : {},
+        );
         return;
       }
 
@@ -579,8 +605,12 @@ function renderKanbanBoard(
           const nextBoard = cloneBoard(board);
           const info = getColumnDropInfo(event.clientX);
           if (!info) return;
+          const movedName = nextBoard.columns[columnPayload.columnIndex]?.name;
           moveColumn(nextBoard, columnPayload.columnIndex, info.insertIndex);
-          updateAndRerender(nextBoard);
+          updateAndRerender(
+            nextBoard,
+            movedName ? { highlightColumnName: movedName } : {},
+          );
           return;
         }
 
