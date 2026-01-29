@@ -209,9 +209,8 @@ function createBoardUpdater(
     if (highlightColumnName) {
       setPendingColumnHighlight(ctx.sourcePath, highlightColumnName);
     }
-    const source = serializeKanbanBoard(board);
     queue = queue
-      .then(() => updateBlockSource(app, ctx, container, source))
+      .then(() => updateBlockSource(app, ctx, container, board))
       .catch((error) => {
         console.error("Inline Kanban update failed", error);
       });
@@ -222,7 +221,7 @@ async function updateBlockSource(
   app: App,
   ctx: MarkdownPostProcessorContext,
   container: HTMLElement,
-  source: string,
+  board: KanbanBoard,
 ): Promise<void> {
   const section = ctx.getSectionInfo(container);
   if (!section) return;
@@ -241,7 +240,8 @@ async function updateBlockSource(
   const closeIndex = findCloseFence(lines, start, end);
   if (openIndex === -1 || closeIndex === -1 || openIndex >= closeIndex) return;
 
-  const newLines = source ? source.split(/\r?\n/) : [];
+  const blockLines = lines.slice(openIndex + 1, closeIndex);
+  const newLines = mergeKanbanBlockLines(blockLines, board);
   const nextContents = [
     ...lines.slice(0, openIndex + 1),
     ...newLines,
@@ -273,6 +273,126 @@ function isKanbanFenceLine(line: string): boolean {
 
 function isFenceLine(line: string): boolean {
   return /^(```|~~~)/.test(line.trim());
+}
+
+type ItemStyle = "bracket" | "colon";
+
+function mergeKanbanBlockLines(
+  blockLines: string[],
+  board: KanbanBoard,
+): string[] {
+  const columnsHeaderIndex = findHeaderIndex(blockLines, /^\s*columns:\s*$/i);
+  const itemsHeaderIndex = findHeaderIndex(blockLines, /^\s*items:\s*$/i);
+
+  if (
+    columnsHeaderIndex === -1 ||
+    itemsHeaderIndex === -1 ||
+    columnsHeaderIndex > itemsHeaderIndex
+  ) {
+    return serializeKanbanBoard(board).split(/\r?\n/);
+  }
+
+  const beforeColumns = blockLines.slice(0, columnsHeaderIndex + 1);
+  const columnsSectionLines = blockLines.slice(
+    columnsHeaderIndex + 1,
+    itemsHeaderIndex,
+  );
+  const itemsHeaderLine = blockLines[itemsHeaderIndex];
+  const itemsSectionLines = blockLines.slice(itemsHeaderIndex + 1);
+
+  const columnEntries = board.columns.map((column) => column.name);
+  const columnsSection = buildSectionLines(
+    columnsSectionLines,
+    columnEntries,
+    blockLines[columnsHeaderIndex],
+  );
+
+  const itemStyle = detectItemStyle(itemsSectionLines);
+  const itemEntries: string[] = [];
+  for (const column of board.columns) {
+    for (const item of column.items) {
+      const line = formatItemLine(column.name, item, itemStyle);
+      if (line) itemEntries.push(line);
+    }
+  }
+  const itemsSection = buildSectionLines(
+    itemsSectionLines,
+    itemEntries,
+    itemsHeaderLine,
+  );
+
+  return [...beforeColumns, ...columnsSection, itemsHeaderLine, ...itemsSection];
+}
+
+function findHeaderIndex(lines: string[], pattern: RegExp): number {
+  return lines.findIndex((line) => pattern.test(line.trim()));
+}
+
+function buildSectionLines(
+  sectionLines: string[],
+  entries: string[],
+  headerLine: string,
+): string[] {
+  const listLineRegex = /^\s*[-*]\s+/;
+  let firstListIndex = -1;
+  let lastListIndex = -1;
+
+  for (let i = 0; i < sectionLines.length; i += 1) {
+    if (listLineRegex.test(sectionLines[i])) {
+      firstListIndex = i;
+      break;
+    }
+  }
+  for (let i = sectionLines.length - 1; i >= 0; i -= 1) {
+    if (listLineRegex.test(sectionLines[i])) {
+      lastListIndex = i;
+      break;
+    }
+  }
+
+  const prefix = getListPrefix(sectionLines, headerLine);
+
+  if (firstListIndex === -1) {
+    return [...sectionLines, ...entries.map((entry) => `${prefix}${entry}`)];
+  }
+
+  const leading = sectionLines.slice(0, firstListIndex);
+  const trailing = sectionLines.slice(lastListIndex + 1);
+  const newLines = entries.map((entry) => `${prefix}${entry}`);
+
+  return [...leading, ...newLines, ...trailing];
+}
+
+function getListPrefix(sectionLines: string[], headerLine: string): string {
+  for (const line of sectionLines) {
+    const match = /^(\s*[-*]\s+)/.exec(line);
+    if (match) return match[1];
+  }
+  const headerIndent = /^\s*/.exec(headerLine)?.[0] ?? "";
+  return `${headerIndent}  - `;
+}
+
+function detectItemStyle(sectionLines: string[]): ItemStyle {
+  for (const line of sectionLines) {
+    const match = /^\s*[-*]\s+(.*)$/.exec(line);
+    if (!match) continue;
+    const content = match[1].trim();
+    if (/^\[[^\]]+\]\s+/.test(content)) return "bracket";
+    if (/^[^:]+:\s+/.test(content)) return "colon";
+  }
+  return "bracket";
+}
+
+function formatItemLine(
+  status: string,
+  text: string,
+  style: ItemStyle,
+): string {
+  const trimmed = text.trim();
+  if (!trimmed) return "";
+  return style === "colon"
+    ? `${status}: ${trimmed}`
+    : `[${status}] ${trimmed}`;
 }
 
 function moveCard(
