@@ -1,11 +1,15 @@
 import {
   App,
   MarkdownPostProcessorContext,
+  Menu,
   Modal,
   Notice,
   Plugin,
+  PluginSettingTab,
+  Setting,
   TFile,
   TFolder,
+  normalizePath,
 } from "obsidian";
 
 type KanbanItem = {
@@ -15,6 +19,9 @@ type KanbanItem = {
 
 type KanbanColumn = {
   name: string;
+  rawName: string;
+  statusName: string;
+  wipLimit?: number;
   items: string[];
 };
 
@@ -22,8 +29,23 @@ type KanbanBoard = {
   columns: KanbanColumn[];
 };
 
+type InlineKanbanSettings = {
+  noteFolder: string;
+  noteTemplatePath: string;
+};
+
+type ColumnDefinition = {
+  rawName: string;
+  baseName: string;
+  wipLimit?: number;
+};
+
 const DEFAULT_COLUMN = "Uncategorized";
 const HIGHLIGHT_DURATION_MS = 900;
+const DEFAULT_SETTINGS: InlineKanbanSettings = {
+  noteFolder: "",
+  noteTemplatePath: "",
+};
 const pendingColumnHighlights = new Map<
   string,
   { name: string; expiresAt: number }
@@ -41,14 +63,25 @@ const DEFAULT_KANBAN_TEMPLATE = [
 ].join("\n");
 
 export default class InlineKanbanPlugin extends Plugin {
-  onload(): void {
+  settings: InlineKanbanSettings = DEFAULT_SETTINGS;
+
+  async onload(): Promise<void> {
+    await this.loadSettings();
+    this.addSettingTab(new InlineKanbanSettingTab(this.app, this));
+
     this.registerMarkdownCodeBlockProcessor("kanban", (source, el, ctx) => {
       const board = parseKanbanSource(source);
       const updateBoard = createBoardUpdater(this.app, ctx, el);
       const highlightColumnName = getPendingColumnHighlight(ctx.sourcePath);
-      renderKanbanBoard(board, el, updateBoard, this.app, {
-        highlightColumnName,
-      });
+      renderKanbanBoard(
+        board,
+        el,
+        updateBoard,
+        this.app,
+        this.settings,
+        ctx.sourcePath,
+        { highlightColumnName },
+      );
     });
 
     this.addCommand({
@@ -120,11 +153,19 @@ export default class InlineKanbanPlugin extends Plugin {
     await this.app.vault.modify(file, DEFAULT_KANBAN_TEMPLATE);
     new Notice("Converted to Kanban board.");
   }
+
+  async loadSettings(): Promise<void> {
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+  }
+
+  async saveSettings(): Promise<void> {
+    await this.saveData(this.settings);
+  }
 }
 
 function parseKanbanSource(source: string): KanbanBoard {
   const lines = source.split(/\r?\n/);
-  const columns: string[] = [];
+  const columnDefinitions: ColumnDefinition[] = [];
   const items: KanbanItem[] = [];
   let section: "columns" | "items" | null = null;
 
@@ -135,7 +176,11 @@ function parseKanbanSource(source: string): KanbanBoard {
     const columnsInline = /^columns:\s*(.+)$/i.exec(line);
     if (columnsInline) {
       section = "columns";
-      columns.push(...splitCommaList(columnsInline[1]));
+      const entries = splitCommaList(columnsInline[1]);
+      for (const entry of entries) {
+        const definition = parseColumnDefinition(entry);
+        if (definition.rawName) columnDefinitions.push(definition);
+      }
       continue;
     }
 
@@ -153,7 +198,7 @@ function parseKanbanSource(source: string): KanbanBoard {
     if (listMatch) {
       const entry = listMatch[1].trim();
       if (section === "columns") {
-        if (entry) columns.push(entry);
+        if (entry) columnDefinitions.push(parseColumnDefinition(entry));
         continue;
       }
 
@@ -166,36 +211,74 @@ function parseKanbanSource(source: string): KanbanBoard {
 
   const columnMap: Record<string, KanbanColumn> = {};
   const columnOrder: string[] = [];
+  const statusUsage = new Map<
+    string,
+    { rawMatches: number; baseMatches: number }
+  >();
 
-  const ensureColumn = (name: string): KanbanColumn => {
-    const key = normalizeKey(name);
+  const ensureColumn = (definition: ColumnDefinition): KanbanColumn => {
+    const key = normalizeColumnKey(definition.rawName);
     const existing = columnMap[key];
-    if (existing) return existing;
-    const column = { name, items: [] };
+    if (existing) {
+      if (!existing.rawName) existing.rawName = definition.rawName;
+      if (!existing.name) existing.name = definition.baseName;
+      if (existing.wipLimit == null && definition.wipLimit != null) {
+        existing.wipLimit = definition.wipLimit;
+      }
+      return existing;
+    }
+    const column = createColumnFromDefinition(definition);
     columnMap[key] = column;
     columnOrder.push(key);
     return column;
   };
 
-  for (const columnName of columns) {
-    ensureColumn(columnName);
+  for (const definition of columnDefinitions) {
+    ensureColumn(definition);
   }
 
-  if (Object.keys(columnMap).length === 0) {
+  if (columnOrder.length === 0) {
     for (const item of items) {
-      if (item.status) ensureColumn(item.status);
+      if (item.status) ensureColumn(parseColumnDefinition(item.status));
     }
   }
 
-  if (Object.keys(columnMap).length === 0) {
-    ensureColumn(DEFAULT_COLUMN);
+  if (columnOrder.length === 0) {
+    ensureColumn(parseColumnDefinition(DEFAULT_COLUMN));
   }
 
   for (const item of items) {
     const statusName = item.status || DEFAULT_COLUMN;
+    const key = normalizeColumnKey(statusName);
     const column =
-      columnMap[normalizeKey(statusName)] ?? ensureColumn(statusName);
+      columnMap[key] ?? ensureColumn(parseColumnDefinition(statusName));
     column.items.push(item.text);
+
+    const usage = statusUsage.get(key) ?? { rawMatches: 0, baseMatches: 0 };
+    const trimmedStatus = statusName.trim();
+    if (
+      trimmedStatus &&
+      normalizeKey(trimmedStatus) === normalizeKey(column.rawName)
+    ) {
+      usage.rawMatches += 1;
+    }
+    if (
+      trimmedStatus &&
+      normalizeKey(trimmedStatus) === normalizeKey(column.name)
+    ) {
+      usage.baseMatches += 1;
+    }
+    statusUsage.set(key, usage);
+  }
+
+  for (const key of columnOrder) {
+    const column = columnMap[key];
+    const usage = statusUsage.get(key);
+    if (usage && usage.rawMatches > 0 && usage.baseMatches === 0) {
+      column.statusName = column.rawName;
+    } else {
+      column.statusName = column.name;
+    }
   }
 
   return {
@@ -232,8 +315,44 @@ function splitCommaList(raw: string): string[] {
     .filter(Boolean);
 }
 
+function parseColumnDefinition(rawName: string): ColumnDefinition {
+  const trimmed = rawName.trim();
+  const match = /^(.*?)(?:\s*\((\d+)\))\s*$/.exec(trimmed);
+  if (!match) {
+    return { rawName: trimmed, baseName: trimmed };
+  }
+  const baseName = match[1].trim();
+  const limit = Number(match[2]);
+  if (!Number.isFinite(limit)) {
+    return { rawName: trimmed, baseName: trimmed };
+  }
+  return {
+    rawName: trimmed,
+    baseName: baseName || trimmed,
+    wipLimit: limit,
+  };
+}
+
+function createColumnFromDefinition(
+  definition: ColumnDefinition,
+): KanbanColumn {
+  const name = definition.baseName || definition.rawName;
+  return {
+    name,
+    rawName: definition.rawName,
+    statusName: name,
+    items: [],
+    wipLimit: definition.wipLimit,
+  };
+}
+
 function normalizeKey(value: string): string {
   return value.trim().toLowerCase();
+}
+
+function normalizeColumnKey(value: string): string {
+  const { baseName } = parseColumnDefinition(value);
+  return normalizeKey(baseName || value);
 }
 
 async function getUniqueFileName(
@@ -280,6 +399,9 @@ function cloneBoard(board: KanbanBoard): KanbanBoard {
   return {
     columns: board.columns.map((column) => ({
       name: column.name,
+      rawName: column.rawName,
+      statusName: column.statusName,
+      wipLimit: column.wipLimit,
       items: [...column.items],
     })),
   };
@@ -289,14 +411,14 @@ function serializeKanbanBoard(board: KanbanBoard): string {
   const lines: string[] = [];
   lines.push("columns:");
   for (const column of board.columns) {
-    lines.push(`  - ${column.name}`);
+    lines.push(`  - ${column.rawName}`);
   }
   lines.push("items:");
   for (const column of board.columns) {
     for (const item of column.items) {
       const text = item.trim();
       if (!text) continue;
-      lines.push(`  - [${column.name}] ${text}`);
+      lines.push(`  - [${column.statusName}] ${text}`);
     }
   }
   return lines.join("\n");
@@ -403,7 +525,7 @@ function mergeKanbanBlockLines(
   const itemsHeaderLine = blockLines[itemsHeaderIndex];
   const itemsSectionLines = blockLines.slice(itemsHeaderIndex + 1);
 
-  const columnEntries = board.columns.map((column) => column.name);
+  const columnEntries = board.columns.map((column) => column.rawName);
   const columnsSection = buildSectionLines(
     columnsSectionLines,
     columnEntries,
@@ -414,7 +536,7 @@ function mergeKanbanBlockLines(
   const itemEntries: string[] = [];
   for (const column of board.columns) {
     for (const item of column.items) {
-      const line = formatItemLine(column.name, item, itemStyle);
+      const line = formatItemLine(column.statusName, item, itemStyle);
       if (line) itemEntries.push(line);
     }
   }
@@ -424,7 +546,12 @@ function mergeKanbanBlockLines(
     itemsHeaderLine,
   );
 
-  return [...beforeColumns, ...columnsSection, itemsHeaderLine, ...itemsSection];
+  return [
+    ...beforeColumns,
+    ...columnsSection,
+    itemsHeaderLine,
+    ...itemsSection,
+  ];
 }
 
 function findHeaderIndex(lines: string[], pattern: RegExp): number {
@@ -493,9 +620,82 @@ function formatItemLine(
 ): string {
   const trimmed = text.trim();
   if (!trimmed) return "";
-  return style === "colon"
-    ? `${status}: ${trimmed}`
-    : `[${status}] ${trimmed}`;
+  return style === "colon" ? `${status}: ${trimmed}` : `[${status}] ${trimmed}`;
+}
+
+async function createNoteFromCard(
+  app: App,
+  settings: InlineKanbanSettings,
+  cardText: string,
+  sourcePath?: string,
+): Promise<void> {
+  const trimmed = cardText.trim();
+  if (!trimmed) {
+    new Notice("Card text is empty.");
+    return;
+  }
+
+  const folderPath = resolveNoteFolderPath(settings.noteFolder, sourcePath);
+  const normalizedFolder = folderPath ? normalizePath(folderPath) : "";
+
+  if (normalizedFolder) {
+    const existing = app.vault.getAbstractFileByPath(normalizedFolder);
+    if (!existing) {
+      await app.vault.createFolder(normalizedFolder);
+    } else if (!(existing instanceof TFolder)) {
+      new Notice("Note folder path is not a folder.");
+      return;
+    }
+  }
+
+  const baseName = sanitizeFileName(trimmed) || "Kanban Card";
+  const fileName = await getUniqueFileName(app, normalizedFolder, baseName);
+  const filePath = normalizedFolder
+    ? `${normalizedFolder}/${fileName}`
+    : fileName;
+  const contents = await getNoteTemplateContents(
+    app,
+    settings.noteTemplatePath,
+    trimmed,
+  );
+  const file = await app.vault.create(filePath, contents);
+  await app.workspace.getLeaf(true).openFile(file);
+  new Notice(`Created note: ${file.path}`);
+}
+
+function resolveNoteFolderPath(
+  noteFolder: string,
+  sourcePath?: string,
+): string {
+  const trimmed = noteFolder.trim();
+  if (trimmed) return trimmed;
+  if (!sourcePath) return "";
+  const lastSlash = sourcePath.lastIndexOf("/");
+  return lastSlash === -1 ? "" : sourcePath.slice(0, lastSlash);
+}
+
+async function getNoteTemplateContents(
+  app: App,
+  templatePath: string,
+  title: string,
+): Promise<string> {
+  const trimmed = templatePath.trim();
+  if (!trimmed) return `# ${title}\n`;
+  const normalizedTemplate = normalizePath(trimmed);
+  const templateFile = app.vault.getAbstractFileByPath(normalizedTemplate);
+  if (!(templateFile instanceof TFile)) {
+    new Notice("Template file not found. Using default note content.");
+    return `# ${title}\n`;
+  }
+  const template = await app.vault.read(templateFile);
+  return template.replace(/\{\{\s*title\s*\}\}/gi, title);
+}
+
+function sanitizeFileName(raw: string): string {
+  return raw
+    .replace(/[\\/#%*?:"<>|]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function moveCard(
@@ -555,6 +755,8 @@ function renderKanbanBoard(
   container: HTMLElement,
   updateBoard: (board: KanbanBoard, highlightColumnName?: string) => void,
   app: App,
+  settings: InlineKanbanSettings,
+  sourcePath?: string,
   options: RenderOptions = {},
 ): void {
   container.innerHTML = "";
@@ -583,7 +785,15 @@ function renderKanbanBoard(
     nextBoard: KanbanBoard,
     nextOptions: RenderOptions = {},
   ): void => {
-    renderKanbanBoard(nextBoard, container, updateBoard, app, nextOptions);
+    renderKanbanBoard(
+      nextBoard,
+      container,
+      updateBoard,
+      app,
+      settings,
+      sourcePath,
+      nextOptions,
+    );
   };
 
   const updateAndRerender = (
@@ -672,11 +882,14 @@ function renderKanbanBoard(
         const name = value.trim();
         if (!name) return;
         const nextBoard = cloneBoard(board);
+        const definition = parseColumnDefinition(name);
         const exists = nextBoard.columns.some(
-          (column) => normalizeKey(column.name) === normalizeKey(name),
+          (column) =>
+            normalizeColumnKey(column.rawName) ===
+            normalizeColumnKey(definition.rawName),
         );
         if (exists) return;
-        nextBoard.columns.push({ name, items: [] });
+        nextBoard.columns.push(createColumnFromDefinition(definition));
         updateAndRerender(nextBoard);
       },
     });
@@ -685,13 +898,13 @@ function renderKanbanBoard(
   toolbar.appendChild(addColumnButton);
 
   const highlightKey = options.highlightColumnName
-    ? normalizeKey(options.highlightColumnName)
+    ? normalizeColumnKey(options.highlightColumnName)
     : null;
 
   board.columns.forEach((column, columnIndex) => {
     const columnEl = document.createElement("div");
     columnEl.className = "kanban-column";
-    if (highlightKey && normalizeKey(column.name) === highlightKey) {
+    if (highlightKey && normalizeColumnKey(column.name) === highlightKey) {
       columnEl.classList.add("is-column-highlight");
     }
     boardEl.appendChild(columnEl);
@@ -711,6 +924,66 @@ function renderKanbanBoard(
     title.className = "kanban-column-title";
     title.textContent = column.name;
     header.appendChild(title);
+
+    const promptRenameColumn = (): void => {
+      const modal = new TextPromptModal(app, {
+        title: `Rename column "${column.name}"`,
+        placeholder: "Column name",
+        submitLabel: "Rename",
+        initialValue: column.rawName,
+        onSubmit: (value) => {
+          const name = value.trim();
+          if (!name) return;
+          const definition = parseColumnDefinition(name);
+          const normalizedName = normalizeColumnKey(definition.rawName);
+          const nextBoard = cloneBoard(board);
+          const conflict = nextBoard.columns.some((entry, index) => {
+            if (index === columnIndex) return false;
+            return normalizeColumnKey(entry.rawName) === normalizedName;
+          });
+          if (conflict) {
+            new Notice("A column with that name already exists.");
+            return;
+          }
+          const updated = createColumnFromDefinition(definition);
+          updated.items = [...(nextBoard.columns[columnIndex]?.items ?? [])];
+          nextBoard.columns[columnIndex] = updated;
+          updateAndRerender(nextBoard, updated.name);
+        },
+      });
+      modal.open();
+    };
+
+    title.addEventListener("dblclick", (event) => {
+      event.preventDefault();
+      promptRenameColumn();
+    });
+    header.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      const menu = new Menu();
+      menu.addItem((menuItem) => {
+        menuItem
+          .setTitle("Rename column")
+          .setIcon("pencil")
+          .onClick(() => {
+            promptRenameColumn();
+          });
+      });
+      menu.showAtMouseEvent(event);
+    });
+
+    const wipLimit = column.wipLimit;
+    if (typeof wipLimit === "number") {
+      const wipBadge = document.createElement("span");
+      wipBadge.className = "kanban-wip-badge";
+      const itemCount = column.items.length;
+      wipBadge.textContent = `${itemCount}/${wipLimit}`;
+      if (itemCount > wipLimit) {
+        columnEl.classList.add("is-wip-limit-exceeded");
+        wipBadge.classList.add("is-over-limit");
+      }
+      header.appendChild(wipBadge);
+    }
 
     const addButton = document.createElement("button");
     addButton.className = "kanban-add-card";
@@ -818,6 +1091,49 @@ function renderKanbanBoard(
       card.className = "kanban-card";
       card.textContent = item;
       card.setAttribute("draggable", "true");
+      const promptRenameCard = (): void => {
+        const modal = new TextPromptModal(app, {
+          title: "Rename card",
+          placeholder: "Card title",
+          submitLabel: "Rename",
+          initialValue: item,
+          onSubmit: (value) => {
+            const name = value.trim();
+            if (!name) return;
+            const nextBoard = cloneBoard(board);
+            const target = nextBoard.columns[columnIndex]?.items;
+            if (!target || !target[itemIndex]) return;
+            target[itemIndex] = name;
+            updateAndRerender(nextBoard);
+          },
+        });
+        modal.open();
+      };
+      card.addEventListener("dblclick", (event) => {
+        event.preventDefault();
+        promptRenameCard();
+      });
+      card.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        const menu = new Menu();
+        menu.addItem((menuItem) => {
+          menuItem
+            .setTitle("Rename card")
+            .setIcon("pencil")
+            .onClick(() => {
+              promptRenameCard();
+            });
+        });
+        menu.addItem((menuItem) => {
+          menuItem
+            .setTitle("Create note from card")
+            .setIcon("file-plus")
+            .onClick(() => {
+              void createNoteFromCard(app, settings, item, sourcePath);
+            });
+        });
+        menu.showAtMouseEvent(event);
+      });
       card.addEventListener("dragstart", (event) => {
         if (!event.dataTransfer) return;
         event.dataTransfer.setData(
@@ -935,6 +1251,7 @@ class TextPromptModal extends Modal {
   private readonly placeholder: string;
   private readonly submitLabel: string;
   private readonly onSubmit: (text: string) => void;
+  private readonly initialValue: string;
 
   constructor(
     app: App,
@@ -942,6 +1259,7 @@ class TextPromptModal extends Modal {
       title: string;
       placeholder?: string;
       submitLabel?: string;
+      initialValue?: string;
       onSubmit: (text: string) => void;
     },
   ) {
@@ -949,6 +1267,7 @@ class TextPromptModal extends Modal {
     this.title = options.title;
     this.placeholder = options.placeholder ?? "";
     this.submitLabel = options.submitLabel ?? "Add";
+    this.initialValue = options.initialValue ?? "";
     this.onSubmit = options.onSubmit;
   }
 
@@ -965,6 +1284,9 @@ class TextPromptModal extends Modal {
     });
     if (this.placeholder) {
       input.setAttr("placeholder", this.placeholder);
+    }
+    if (this.initialValue) {
+      input.value = this.initialValue;
     }
     input.focus();
 
@@ -985,5 +1307,48 @@ class TextPromptModal extends Modal {
       if (event.key === "Enter") submit();
       if (event.key === "Escape") this.close();
     });
+  }
+}
+
+class InlineKanbanSettingTab extends PluginSettingTab {
+  private readonly plugin: InlineKanbanPlugin;
+
+  constructor(app: App, plugin: InlineKanbanPlugin) {
+    super(app, plugin);
+    this.plugin = plugin;
+  }
+
+  display(): void {
+    const { containerEl } = this;
+    containerEl.empty();
+    containerEl.createEl("h2", { text: "Inline Kanban settings" });
+
+    new Setting(containerEl)
+      .setName("New note folder")
+      .setDesc(
+        "Folder for notes created from cards. Leave blank to use the board folder.",
+      )
+      .addText((text) =>
+        text
+          .setPlaceholder("Notes")
+          .setValue(this.plugin.settings.noteFolder)
+          .onChange(async (value) => {
+            this.plugin.settings.noteFolder = value.trim();
+            await this.plugin.saveSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("New note template")
+      .setDesc('Optional template file path. Use "{{title}}" as a placeholder.')
+      .addText((text) =>
+        text
+          .setPlaceholder("Templates/Kanban Note.md")
+          .setValue(this.plugin.settings.noteTemplatePath)
+          .onChange(async (value) => {
+            this.plugin.settings.noteTemplatePath = value.trim();
+            await this.plugin.saveSettings();
+          }),
+      );
   }
 }

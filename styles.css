@@ -120,6 +120,7 @@
   cursor: pointer;
   font-size: 0.9em;
   line-height: 1;
+  margin-left: auto;
   padding: 2px 6px;
 }
 
@@ -132,6 +133,22 @@
   flex-direction: column;
   gap: 6px;
   min-height: 16px;
+}
+
+.inline-kanban .kanban-wip-badge {
+  border-radius: 999px;
+  background: var(--background-modifier-border);
+  color: var(--text-muted);
+  font-size: 0.75em;
+  padding: 2px 6px;
+}
+
+.inline-kanban .kanban-wip-badge.is-over-limit {
+  color: var(--text-error);
+}
+
+.inline-kanban .kanban-column.is-wip-limit-exceeded {
+  border-color: var(--text-error);
 }
 
 .inline-kanban .kanban-column-items.is-drag-over {

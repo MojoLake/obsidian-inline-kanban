@@ -20,6 +20,7 @@ items:
 ````
 
 You can place any normal Markdown before, between, or after kanban blocks.
+WIP limits can be added to column names like `In Progress (5)`.
 
 ## Interactions
 
@@ -28,6 +29,8 @@ You can place any normal Markdown before, between, or after kanban blocks.
 - Drag cards within a column to reorder.
 - Use "Add column" to append a new column.
 - Drag the `:::` handle to reorder columns.
+- Right-click a card to create a note from it.
+- Double-click a column title or card to rename it.
 
 ## Commands
 
