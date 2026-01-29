@@ -635,24 +635,40 @@ async function createNoteFromCard(
     return;
   }
 
-  const folderPath = resolveNoteFolderPath(settings.noteFolder, sourcePath);
-  const normalizedFolder = folderPath ? normalizePath(folderPath) : "";
-
-  if (normalizedFolder) {
-    const existing = app.vault.getAbstractFileByPath(normalizedFolder);
-    if (!existing) {
-      await app.vault.createFolder(normalizedFolder);
-    } else if (!(existing instanceof TFolder)) {
-      new Notice("Note folder path is not a folder.");
-      return;
-    }
+  const wikiTarget = extractWikiLinkTarget(trimmed);
+  if (wikiTarget) {
+    app.workspace.openLinkText(wikiTarget, sourcePath ?? "", false);
+    return;
   }
 
+  const markdownTarget = extractMarkdownLinkTarget(trimmed);
+  if (markdownTarget) {
+    if (/^https?:\/\//i.test(markdownTarget)) {
+      window.open(markdownTarget, "_blank");
+    } else {
+      app.workspace.openLinkText(markdownTarget, sourcePath ?? "", false);
+    }
+    return;
+  }
+
+  const folderPath = resolveNoteFolderPath(settings.noteFolder, sourcePath);
+  const normalizedFolder = folderPath ? normalizePath(folderPath) : "";
+  if (!(await ensureNoteFolder(app, normalizedFolder))) return;
+
   const baseName = sanitizeFileName(trimmed) || "Kanban Card";
-  const fileName = await getUniqueFileName(app, normalizedFolder, baseName);
   const filePath = normalizedFolder
-    ? `${normalizedFolder}/${fileName}`
-    : fileName;
+    ? `${normalizedFolder}/${baseName}.md`
+    : `${baseName}.md`;
+  const existingFile = app.vault.getAbstractFileByPath(filePath);
+  if (existingFile instanceof TFile) {
+    await app.workspace.getLeaf(true).openFile(existingFile);
+    new Notice(`Opened note: ${existingFile.path}`);
+    return;
+  }
+  if (existingFile) {
+    new Notice("Note path is not a file.");
+    return;
+  }
   const contents = await getNoteTemplateContents(
     app,
     settings.noteTemplatePath,
@@ -661,6 +677,23 @@ async function createNoteFromCard(
   const file = await app.vault.create(filePath, contents);
   await app.workspace.getLeaf(true).openFile(file);
   new Notice(`Created note: ${file.path}`);
+}
+
+async function ensureNoteFolder(
+  app: App,
+  folderPath: string,
+): Promise<boolean> {
+  if (!folderPath) return true;
+  const existing = app.vault.getAbstractFileByPath(folderPath);
+  if (!existing) {
+    await app.vault.createFolder(folderPath);
+    return true;
+  }
+  if (!(existing instanceof TFolder)) {
+    new Notice("Note folder path is not a folder.");
+    return false;
+  }
+  return true;
 }
 
 function resolveNoteFolderPath(
@@ -696,6 +729,16 @@ function sanitizeFileName(raw: string): string {
     .replace(/[\\/#%*?:"<>|]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function extractWikiLinkTarget(text: string): string | null {
+  const match = /\[\[([^\]|]+)(?:\|[^\]]*)?\]\]/.exec(text);
+  return match?.[1].trim() || null;
+}
+
+function extractMarkdownLinkTarget(text: string): string | null {
+  const match = /\[[^\]]*]\(([^)]+)\)/.exec(text);
+  return match?.[1].trim() || null;
 }
 
 function extractCardDateTime(text: string): { date?: string; time?: string } {
@@ -1190,6 +1233,13 @@ function renderKanbanBoard(
         });
         modal.open();
       };
+      card.addEventListener("click", (event) => {
+        if (!event.metaKey && !event.ctrlKey) return;
+        if (event.button !== 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        void createNoteFromCard(app, settings, item, sourcePath);
+      });
       card.addEventListener("dblclick", (event) => {
         event.preventDefault();
         promptRenameCard();
