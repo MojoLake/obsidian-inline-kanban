@@ -698,6 +698,41 @@ function sanitizeFileName(raw: string): string {
     .trim();
 }
 
+function extractCardDateTime(text: string): { date?: string; time?: string } {
+  const dateMatch = /@(\d{4}-\d{2}-\d{2})/.exec(text);
+  const timeMatch = /@@(\d{1,2}:\d{2})/.exec(text);
+  return {
+    date: dateMatch?.[1],
+    time: timeMatch?.[1],
+  };
+}
+
+function applyCardDateTime(
+  text: string,
+  date: string,
+  time: string | undefined,
+  setTime: boolean,
+): string {
+  let next = text.trim();
+  const dateToken = `@${date}`;
+  if (/@\d{4}-\d{2}-\d{2}/.test(next)) {
+    next = next.replace(/@\d{4}-\d{2}-\d{2}/, dateToken);
+  } else {
+    next = `${next} ${dateToken}`.trim();
+  }
+
+  if (setTime && time) {
+    const timeToken = `@@${time}`;
+    if (/@@\d{1,2}:\d{2}/.test(next)) {
+      next = next.replace(/@@\d{1,2}:\d{2}/, timeToken);
+    } else {
+      next = `${next} ${timeToken}`.trim();
+    }
+  }
+
+  return next;
+}
+
 function moveCard(
   board: KanbanBoard,
   fromColumnIndex: number,
@@ -1109,6 +1144,52 @@ function renderKanbanBoard(
         });
         modal.open();
       };
+      const promptSetCardDate = (): void => {
+        const { date, time } = extractCardDateTime(item);
+        const modal = new DateTimePromptModal(app, {
+          title: "Set card date",
+          submitLabel: "Set date",
+          includeTime: false,
+          initialDate: date,
+          initialTime: time,
+          onSubmit: ({ nextDate }) => {
+            const nextBoard = cloneBoard(board);
+            const target = nextBoard.columns[columnIndex]?.items;
+            if (!target || !target[itemIndex]) return;
+            target[itemIndex] = applyCardDateTime(
+              target[itemIndex],
+              nextDate,
+              undefined,
+              false,
+            );
+            updateAndRerender(nextBoard);
+          },
+        });
+        modal.open();
+      };
+      const promptSetCardDateTime = (): void => {
+        const { date, time } = extractCardDateTime(item);
+        const modal = new DateTimePromptModal(app, {
+          title: "Set card date & time",
+          submitLabel: "Set date & time",
+          includeTime: true,
+          initialDate: date,
+          initialTime: time,
+          onSubmit: ({ nextDate, nextTime }) => {
+            const nextBoard = cloneBoard(board);
+            const target = nextBoard.columns[columnIndex]?.items;
+            if (!target || !target[itemIndex]) return;
+            target[itemIndex] = applyCardDateTime(
+              target[itemIndex],
+              nextDate,
+              nextTime,
+              true,
+            );
+            updateAndRerender(nextBoard);
+          },
+        });
+        modal.open();
+      };
       card.addEventListener("dblclick", (event) => {
         event.preventDefault();
         promptRenameCard();
@@ -1122,6 +1203,22 @@ function renderKanbanBoard(
             .setIcon("pencil")
             .onClick(() => {
               promptRenameCard();
+            });
+        });
+        menu.addItem((menuItem) => {
+          menuItem
+            .setTitle("Set date")
+            .setIcon("calendar")
+            .onClick(() => {
+              promptSetCardDate();
+            });
+        });
+        menu.addItem((menuItem) => {
+          menuItem
+            .setTitle("Set date & time")
+            .setIcon("clock")
+            .onClick(() => {
+              promptSetCardDateTime();
             });
         });
         menu.addItem((menuItem) => {
@@ -1304,6 +1401,85 @@ class TextPromptModal extends Modal {
     addButton.addEventListener("click", submit);
     cancelButton.addEventListener("click", () => this.close());
     input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") submit();
+      if (event.key === "Escape") this.close();
+    });
+  }
+}
+
+class DateTimePromptModal extends Modal {
+  private readonly title: string;
+  private readonly submitLabel: string;
+  private readonly includeTime: boolean;
+  private readonly initialDate: string;
+  private readonly initialTime: string;
+  private readonly onSubmit: (value: {
+    nextDate: string;
+    nextTime?: string;
+  }) => void;
+
+  constructor(
+    app: App,
+    options: {
+      title: string;
+      submitLabel?: string;
+      includeTime: boolean;
+      initialDate?: string;
+      initialTime?: string;
+      onSubmit: (value: { nextDate: string; nextTime?: string }) => void;
+    },
+  ) {
+    super(app);
+    this.title = options.title;
+    this.submitLabel = options.submitLabel ?? "Set";
+    this.includeTime = options.includeTime;
+    this.initialDate = options.initialDate ?? "";
+    this.initialTime = options.initialTime ?? "";
+    this.onSubmit = options.onSubmit;
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h3", { text: this.title });
+
+    const dateInput = contentEl.createEl("input", {
+      type: "date",
+      cls: "kanban-add-input",
+    });
+    if (this.initialDate) dateInput.value = this.initialDate;
+
+    let timeInput: HTMLInputElement | null = null;
+    if (this.includeTime) {
+      timeInput = contentEl.createEl("input", {
+        type: "time",
+        cls: "kanban-add-input",
+      });
+      if (this.initialTime) timeInput.value = this.initialTime;
+    }
+
+    const actions = contentEl.createDiv({ cls: "kanban-add-actions" });
+    const submitButton = actions.createEl("button", { text: this.submitLabel });
+    const cancelButton = actions.createEl("button", { text: "Cancel" });
+
+    const submit = (): void => {
+      const nextDate = dateInput.value.trim();
+      if (!nextDate) return;
+      const nextTime = timeInput?.value.trim();
+      this.onSubmit({
+        nextDate,
+        nextTime: nextTime || undefined,
+      });
+      this.close();
+    };
+
+    submitButton.addEventListener("click", submit);
+    cancelButton.addEventListener("click", () => this.close());
+    dateInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") submit();
+      if (event.key === "Escape") this.close();
+    });
+    timeInput?.addEventListener("keydown", (event) => {
       if (event.key === "Enter") submit();
       if (event.key === "Escape") this.close();
     });

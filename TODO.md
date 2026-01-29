@@ -15,7 +15,7 @@
 - [x] Convert empty note into a kanban board
 - [x] Create a new note from a card (note folder + template)
 - [x] WIP limits in column titles (e.g. `In Progress (5)`)
-- [ ] Date and time pickers for cards via triggers / menu
+- [x] Date and time pickers for cards via triggers / menu
 - [ ] Image embeds on cards + metadata-driven card images
 - [ ] Archive section + toggle between kanban and markdown view
 - [ ] Search within a board using standard find
