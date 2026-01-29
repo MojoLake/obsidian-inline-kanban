@@ -11,37 +11,21 @@ import {
   TFolder,
   normalizePath,
 } from "obsidian";
-
-type KanbanItem = {
-  status: string;
-  text: string;
-};
-
-type KanbanColumn = {
-  name: string;
-  rawName: string;
-  statusName: string;
-  wipLimit?: number;
-  items: string[];
-};
-
-type KanbanBoard = {
-  columns: KanbanColumn[];
-};
+import {
+  createColumnFromDefinition,
+  normalizeColumnKey,
+  parseColumnDefinition,
+  parseKanbanSource,
+  type KanbanBoard,
+} from "./kanban-core";
+import { parseCardDragPayload, parseColumnDragPayload } from "./drag-payload";
 
 type InlineKanbanSettings = {
   noteFolder: string;
   noteTemplatePath: string;
 };
-
-type ColumnDefinition = {
-  rawName: string;
-  baseName: string;
-  wipLimit?: number;
-};
-
-const DEFAULT_COLUMN = "Uncategorized";
 const HIGHLIGHT_DURATION_MS = 900;
+const MAX_FILE_NAME_ATTEMPTS = 1000;
 const DEFAULT_SETTINGS: InlineKanbanSettings = {
   noteFolder: "",
   noteTemplatePath: "",
@@ -163,196 +147,30 @@ export default class InlineKanbanPlugin extends Plugin {
   }
 }
 
-function parseKanbanSource(source: string): KanbanBoard {
-  const lines = source.split(/\r?\n/);
-  const columnDefinitions: ColumnDefinition[] = [];
-  const items: KanbanItem[] = [];
-  let section: "columns" | "items" | null = null;
-
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-    if (!line) continue;
-
-    const columnsInline = /^columns:\s*(.+)$/i.exec(line);
-    if (columnsInline) {
-      section = "columns";
-      const entries = splitCommaList(columnsInline[1]);
-      for (const entry of entries) {
-        const definition = parseColumnDefinition(entry);
-        if (definition.rawName) columnDefinitions.push(definition);
-      }
-      continue;
-    }
-
-    if (/^columns:\s*$/i.test(line)) {
-      section = "columns";
-      continue;
-    }
-
-    if (/^items:\s*$/i.test(line)) {
-      section = "items";
-      continue;
-    }
-
-    const listMatch = /^[-*]\s+(.*)$/.exec(line);
-    if (listMatch) {
-      const entry = listMatch[1].trim();
-      if (section === "columns") {
-        if (entry) columnDefinitions.push(parseColumnDefinition(entry));
-        continue;
-      }
-
-      if (section === "items") {
-        items.push(parseItemEntry(entry));
-        continue;
-      }
-    }
-  }
-
-  const columnMap: Record<string, KanbanColumn> = {};
-  const columnOrder: string[] = [];
-  const statusUsage = new Map<
-    string,
-    { rawMatches: number; baseMatches: number }
-  >();
-
-  const ensureColumn = (definition: ColumnDefinition): KanbanColumn => {
-    const key = normalizeColumnKey(definition.rawName);
-    const existing = columnMap[key];
-    if (existing) {
-      if (!existing.rawName) existing.rawName = definition.rawName;
-      if (!existing.name) existing.name = definition.baseName;
-      if (existing.wipLimit == null && definition.wipLimit != null) {
-        existing.wipLimit = definition.wipLimit;
-      }
-      return existing;
-    }
-    const column = createColumnFromDefinition(definition);
-    columnMap[key] = column;
-    columnOrder.push(key);
-    return column;
-  };
-
-  for (const definition of columnDefinitions) {
-    ensureColumn(definition);
-  }
-
-  if (columnOrder.length === 0) {
-    for (const item of items) {
-      if (item.status) ensureColumn(parseColumnDefinition(item.status));
-    }
-  }
-
-  if (columnOrder.length === 0) {
-    ensureColumn(parseColumnDefinition(DEFAULT_COLUMN));
-  }
-
-  for (const item of items) {
-    const statusName = item.status || DEFAULT_COLUMN;
-    const key = normalizeColumnKey(statusName);
-    const column =
-      columnMap[key] ?? ensureColumn(parseColumnDefinition(statusName));
-    column.items.push(item.text);
-
-    const usage = statusUsage.get(key) ?? { rawMatches: 0, baseMatches: 0 };
-    const trimmedStatus = statusName.trim();
-    if (
-      trimmedStatus &&
-      normalizeKey(trimmedStatus) === normalizeKey(column.rawName)
-    ) {
-      usage.rawMatches += 1;
-    }
-    if (
-      trimmedStatus &&
-      normalizeKey(trimmedStatus) === normalizeKey(column.name)
-    ) {
-      usage.baseMatches += 1;
-    }
-    statusUsage.set(key, usage);
-  }
-
-  for (const key of columnOrder) {
-    const column = columnMap[key];
-    const usage = statusUsage.get(key);
-    if (usage && usage.rawMatches > 0 && usage.baseMatches === 0) {
-      column.statusName = column.rawName;
-    } else {
-      column.statusName = column.name;
-    }
-  }
-
-  return {
-    columns: columnOrder.map((key) => columnMap[key]).filter(Boolean),
-  };
+function isNonNegativeInteger(value: number): boolean {
+  return Number.isInteger(value) && value >= 0;
 }
 
-function parseItemEntry(raw: string): KanbanItem {
-  let status = "";
-  let text = raw.trim();
-
-  const bracketMatch = /^\[(.+?)\]\s*(.*)$/.exec(text);
-  if (bracketMatch) {
-    status = bracketMatch[1].trim();
-    text = bracketMatch[2].trim();
-  } else {
-    const colonMatch = /^([^:]+):\s*(.*)$/.exec(text);
-    if (colonMatch) {
-      status = colonMatch[1].trim();
-      text = colonMatch[2].trim();
-    }
-  }
-
-  if (!status) status = DEFAULT_COLUMN;
-  if (!text) text = raw.trim();
-
-  return { status, text };
+function isValidColumnIndex(board: KanbanBoard, columnIndex: number): boolean {
+  return (
+    isNonNegativeInteger(columnIndex) && columnIndex < board.columns.length
+  );
 }
 
-function splitCommaList(raw: string): string[] {
-  return raw
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter(Boolean);
+function isValidItemIndex(
+  board: KanbanBoard,
+  columnIndex: number,
+  itemIndex: number,
+): boolean {
+  if (!isValidColumnIndex(board, columnIndex)) return false;
+  return (
+    isNonNegativeInteger(itemIndex) &&
+    itemIndex < board.columns[columnIndex].items.length
+  );
 }
 
-function parseColumnDefinition(rawName: string): ColumnDefinition {
-  const trimmed = rawName.trim();
-  const match = /^(.*?)(?:\s*\((\d+)\))\s*$/.exec(trimmed);
-  if (!match) {
-    return { rawName: trimmed, baseName: trimmed };
-  }
-  const baseName = match[1].trim();
-  const limit = Number(match[2]);
-  if (!Number.isFinite(limit)) {
-    return { rawName: trimmed, baseName: trimmed };
-  }
-  return {
-    rawName: trimmed,
-    baseName: baseName || trimmed,
-    wipLimit: limit,
-  };
-}
-
-function createColumnFromDefinition(
-  definition: ColumnDefinition,
-): KanbanColumn {
-  const name = definition.baseName || definition.rawName;
-  return {
-    name,
-    rawName: definition.rawName,
-    statusName: name,
-    items: [],
-    wipLimit: definition.wipLimit,
-  };
-}
-
-function normalizeKey(value: string): string {
-  return value.trim().toLowerCase();
-}
-
-function normalizeColumnKey(value: string): string {
-  const { baseName } = parseColumnDefinition(value);
-  return normalizeKey(baseName || value);
+function isEventTargetNode(target: EventTarget | null): target is Node {
+  return !!target && target instanceof Node;
 }
 
 async function getUniqueFileName(
@@ -364,7 +182,7 @@ async function getUniqueFileName(
   const normalizedFolder = folderPath ? `${folderPath}/` : "";
   let index = 0;
 
-  while (index < 1000) {
+  while (index < MAX_FILE_NAME_ATTEMPTS) {
     const suffix = index === 0 ? "" : ` ${index}`;
     const candidate = `${baseName}${suffix}${extension}`;
     const path = `${normalizedFolder}${candidate}`;
@@ -438,6 +256,7 @@ function createBoardUpdater(
       .then(() => updateBlockSource(app, ctx, container, board))
       .catch((error) => {
         console.error("Inline Kanban update failed", error);
+        new Notice("Inline Kanban update failed. Check console for details.");
       });
   };
 }
@@ -651,32 +470,37 @@ async function createNoteFromCard(
     return;
   }
 
-  const folderPath = resolveNoteFolderPath(settings.noteFolder, sourcePath);
-  const normalizedFolder = folderPath ? normalizePath(folderPath) : "";
-  if (!(await ensureNoteFolder(app, normalizedFolder))) return;
+  try {
+    const folderPath = resolveNoteFolderPath(settings.noteFolder, sourcePath);
+    const normalizedFolder = folderPath ? normalizePath(folderPath) : "";
+    if (!(await ensureNoteFolder(app, normalizedFolder))) return;
 
-  const baseName = sanitizeFileName(trimmed) || "Kanban Card";
-  const filePath = normalizedFolder
-    ? `${normalizedFolder}/${baseName}.md`
-    : `${baseName}.md`;
-  const existingFile = app.vault.getAbstractFileByPath(filePath);
-  if (existingFile instanceof TFile) {
-    await app.workspace.getLeaf(true).openFile(existingFile);
-    new Notice(`Opened note: ${existingFile.path}`);
-    return;
+    const baseName = sanitizeFileName(trimmed) || "Kanban Card";
+    const filePath = normalizedFolder
+      ? `${normalizedFolder}/${baseName}.md`
+      : `${baseName}.md`;
+    const existingFile = app.vault.getAbstractFileByPath(filePath);
+    if (existingFile instanceof TFile) {
+      await app.workspace.getLeaf(true).openFile(existingFile);
+      new Notice(`Opened note: ${existingFile.path}`);
+      return;
+    }
+    if (existingFile) {
+      new Notice("Note path is not a file.");
+      return;
+    }
+    const contents = await getNoteTemplateContents(
+      app,
+      settings.noteTemplatePath,
+      trimmed,
+    );
+    const file = await app.vault.create(filePath, contents);
+    await app.workspace.getLeaf(true).openFile(file);
+    new Notice(`Created note: ${file.path}`);
+  } catch (error) {
+    console.error("Failed to create note from card", error);
+    new Notice("Failed to create note from card. Check console for details.");
   }
-  if (existingFile) {
-    new Notice("Note path is not a file.");
-    return;
-  }
-  const contents = await getNoteTemplateContents(
-    app,
-    settings.noteTemplatePath,
-    trimmed,
-  );
-  const file = await app.vault.create(filePath, contents);
-  await app.workspace.getLeaf(true).openFile(file);
-  new Notice(`Created note: ${file.path}`);
 }
 
 async function ensureNoteFolder(
@@ -686,8 +510,14 @@ async function ensureNoteFolder(
   if (!folderPath) return true;
   const existing = app.vault.getAbstractFileByPath(folderPath);
   if (!existing) {
-    await app.vault.createFolder(folderPath);
-    return true;
+    try {
+      await app.vault.createFolder(folderPath);
+      return true;
+    } catch (error) {
+      console.error("Failed to create note folder", error);
+      new Notice("Failed to create note folder. Check console for details.");
+      return false;
+    }
   }
   if (!(existing instanceof TFolder)) {
     new Notice("Note folder path is not a folder.");
@@ -720,8 +550,14 @@ async function getNoteTemplateContents(
     new Notice("Template file not found. Using default note content.");
     return `# ${title}\n`;
   }
-  const template = await app.vault.read(templateFile);
-  return template.replace(/\{\{\s*title\s*\}\}/gi, title);
+  try {
+    const template = await app.vault.read(templateFile);
+    return template.replace(/\{\{\s*title\s*\}\}/gi, title);
+  } catch (error) {
+    console.error("Failed to read note template", error);
+    new Notice("Template read failed. Using default note content.");
+    return `# ${title}\n`;
+  }
 }
 
 function sanitizeFileName(raw: string): string {
@@ -824,6 +660,106 @@ function moveColumn(
   columns.splice(insertIndex, 0, moved);
 }
 
+type ColumnDropInfo = {
+  insertIndex: number;
+  indicatorLeft: number;
+};
+
+type ColumnDropContext = {
+  board: KanbanBoard;
+  boardEl: HTMLElement;
+  dropIndicator: HTMLElement;
+  updateAndRerender: (board: KanbanBoard, highlightColumnName?: string) => void;
+};
+
+function createBoardShell(container: HTMLElement): {
+  toolbar: HTMLDivElement;
+  boardEl: HTMLDivElement;
+  dropIndicator: HTMLDivElement;
+} {
+  const toolbar = document.createElement("div");
+  toolbar.className = "kanban-toolbar";
+  container.appendChild(toolbar);
+
+  const boardEl = document.createElement("div");
+  boardEl.className = "kanban-board";
+  container.appendChild(boardEl);
+
+  const dropIndicator = document.createElement("div");
+  dropIndicator.className = "kanban-drop-indicator";
+  boardEl.appendChild(dropIndicator);
+
+  return { toolbar, boardEl, dropIndicator };
+}
+
+function renderEmptyBoard(boardEl: HTMLElement): void {
+  const empty = document.createElement("div");
+  empty.className = "kanban-empty";
+  empty.textContent = "No kanban items found.";
+  boardEl.appendChild(empty);
+}
+
+function getColumnDropInfo(
+  boardEl: HTMLElement,
+  clientX: number,
+): ColumnDropInfo | null {
+  const columns = Array.from(
+    boardEl.querySelectorAll<HTMLElement>(".kanban-column"),
+  );
+  if (columns.length === 0) return null;
+  const boardRect = boardEl.getBoundingClientRect();
+
+  for (let i = 0; i < columns.length; i += 1) {
+    const rect = columns[i].getBoundingClientRect();
+    if (clientX < rect.left + rect.width / 2) {
+      return {
+        insertIndex: i,
+        indicatorLeft: rect.left - boardRect.left + boardEl.scrollLeft,
+      };
+    }
+  }
+
+  const lastRect = columns[columns.length - 1].getBoundingClientRect();
+  return {
+    insertIndex: columns.length,
+    indicatorLeft: lastRect.right - boardRect.left + boardEl.scrollLeft,
+  };
+}
+
+function showColumnIndicatorAt(
+  { boardEl, dropIndicator }: ColumnDropContext,
+  clientX: number,
+): void {
+  const info = getColumnDropInfo(boardEl, clientX);
+  if (!info) return;
+  dropIndicator.style.left = `${Math.max(0, info.indicatorLeft - 2)}px`;
+  dropIndicator.style.opacity = "1";
+}
+
+function clearColumnIndicators(dropIndicator: HTMLElement): void {
+  dropIndicator.style.opacity = "0";
+}
+
+function handleColumnDropEvent(
+  event: DragEvent,
+  context: ColumnDropContext,
+  options: { stopPropagation?: boolean } = {},
+): boolean {
+  const columnPayload = readColumnDragPayload(event);
+  if (!columnPayload) return false;
+  if (options.stopPropagation) event.stopPropagation();
+  if (!isValidColumnIndex(context.board, columnPayload.columnIndex)) {
+    return true;
+  }
+  const info = getColumnDropInfo(context.boardEl, event.clientX);
+  if (!info) return true;
+  const nextBoard = cloneBoard(context.board);
+  const movedName = nextBoard.columns[columnPayload.columnIndex]?.name;
+  moveColumn(nextBoard, columnPayload.columnIndex, info.insertIndex);
+  context.updateAndRerender(nextBoard, movedName);
+  return true;
+}
+
 type RenderOptions = {
   highlightColumnName?: string;
 };
@@ -839,23 +775,10 @@ function renderKanbanBoard(
 ): void {
   container.innerHTML = "";
   container.classList.add("inline-kanban");
-  const toolbar = document.createElement("div");
-  toolbar.className = "kanban-toolbar";
-  container.appendChild(toolbar);
-
-  const boardEl = document.createElement("div");
-  boardEl.className = "kanban-board";
-  container.appendChild(boardEl);
-
-  const dropIndicator = document.createElement("div");
-  dropIndicator.className = "kanban-drop-indicator";
-  boardEl.appendChild(dropIndicator);
+  const { toolbar, boardEl, dropIndicator } = createBoardShell(container);
 
   if (board.columns.length === 0) {
-    const empty = document.createElement("div");
-    empty.className = "kanban-empty";
-    empty.textContent = "No kanban items found.";
-    boardEl.appendChild(empty);
+    renderEmptyBoard(boardEl);
     return;
   }
 
@@ -882,69 +805,31 @@ function renderKanbanBoard(
     rerender(nextBoard, highlightColumnName ? { highlightColumnName } : {});
   };
 
-  const clearColumnIndicators = (): void => {
-    dropIndicator.style.opacity = "0";
-  };
-
-  const getColumnDropInfo = (
-    clientX: number,
-  ): {
-    insertIndex: number;
-    indicatorLeft: number;
-  } | null => {
-    const columns = Array.from(
-      boardEl.querySelectorAll<HTMLElement>(".kanban-column"),
-    );
-    if (columns.length === 0) return null;
-    const boardRect = boardEl.getBoundingClientRect();
-
-    for (let i = 0; i < columns.length; i += 1) {
-      const rect = columns[i].getBoundingClientRect();
-      if (clientX < rect.left + rect.width / 2) {
-        return {
-          insertIndex: i,
-          indicatorLeft: rect.left - boardRect.left + boardEl.scrollLeft,
-        };
-      }
-    }
-
-    const lastRect = columns[columns.length - 1].getBoundingClientRect();
-    return {
-      insertIndex: columns.length,
-      indicatorLeft: lastRect.right - boardRect.left + boardEl.scrollLeft,
-    };
-  };
-
-  const showColumnIndicatorAt = (clientX: number): void => {
-    const info = getColumnDropInfo(clientX);
-    if (!info) return;
-    dropIndicator.style.left = `${Math.max(0, info.indicatorLeft - 2)}px`;
-    dropIndicator.style.opacity = "1";
+  const dropContext: ColumnDropContext = {
+    board,
+    boardEl,
+    dropIndicator,
+    updateAndRerender,
   };
 
   boardEl.addEventListener("dragover", (event) => {
     if (!hasTransferType(event, "application/x-inline-kanban-column")) return;
     event.preventDefault();
-    showColumnIndicatorAt(event.clientX);
+    showColumnIndicatorAt(dropContext, event.clientX);
   });
 
   boardEl.addEventListener("dragleave", (event) => {
-    if (!boardEl.contains(event.relatedTarget as Node | null)) {
-      clearColumnIndicators();
+    const relatedTarget = event.relatedTarget;
+    if (!isEventTargetNode(relatedTarget) || !boardEl.contains(relatedTarget)) {
+      clearColumnIndicators(dropIndicator);
     }
   });
 
   boardEl.addEventListener("drop", (event) => {
-    const columnPayload = readColumnDragPayload(event);
-    if (!columnPayload) return;
+    const handled = handleColumnDropEvent(event, dropContext);
+    if (!handled) return;
     event.preventDefault();
-    clearColumnIndicators();
-    const info = getColumnDropInfo(event.clientX);
-    if (!info) return;
-    const nextBoard = cloneBoard(board);
-    const movedName = nextBoard.columns[columnPayload.columnIndex]?.name;
-    moveColumn(nextBoard, columnPayload.columnIndex, info.insertIndex);
-    updateAndRerender(nextBoard, movedName);
+    clearColumnIndicators(dropIndicator);
   });
 
   const addColumnButton = document.createElement("button");
@@ -1106,27 +991,23 @@ function renderKanbanBoard(
     });
     dragHandle.addEventListener("dragend", () => {
       columnEl.classList.remove("is-column-dragging");
-      clearColumnIndicators();
+      clearColumnIndicators(dropIndicator);
     });
 
     const handleColumnDrop = (event: DragEvent): void => {
       event.preventDefault();
       setDragOver(false);
-      clearColumnIndicators();
-      const columnPayload = readColumnDragPayload(event);
-      if (columnPayload) {
-        event.stopPropagation();
-        const nextBoard = cloneBoard(board);
-        const info = getColumnDropInfo(event.clientX);
-        if (!info) return;
-        const movedName = nextBoard.columns[columnPayload.columnIndex]?.name;
-        moveColumn(nextBoard, columnPayload.columnIndex, info.insertIndex);
-        updateAndRerender(nextBoard, movedName);
-        return;
-      }
+      clearColumnIndicators(dropIndicator);
+      const handled = handleColumnDropEvent(event, dropContext, {
+        stopPropagation: true,
+      });
+      if (handled) return;
 
       const payload = readCardDragPayload(event);
       if (!payload) return;
+      if (!isValidItemIndex(board, payload.columnIndex, payload.itemIndex)) {
+        return;
+      }
       const nextBoard = cloneBoard(board);
       moveCard(
         nextBoard,
@@ -1148,18 +1029,22 @@ function renderKanbanBoard(
       event.preventDefault();
       if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
       if (hasTransferType(event, "application/x-inline-kanban-column")) {
-        showColumnIndicatorAt(event.clientX);
+        showColumnIndicatorAt(dropContext, event.clientX);
         setDragOver(false);
         return;
       }
 
-      clearColumnIndicators();
+      clearColumnIndicators(dropIndicator);
       setDragOver(true);
     });
     columnEl.addEventListener("dragleave", (event) => {
-      if (!columnEl.contains(event.relatedTarget as Node | null)) {
+      const relatedTarget = event.relatedTarget;
+      if (
+        !isEventTargetNode(relatedTarget) ||
+        !columnEl.contains(relatedTarget)
+      ) {
         setDragOver(false);
-        clearColumnIndicators();
+        clearColumnIndicators(dropIndicator);
       }
     });
     columnEl.addEventListener("drop", handleColumnDrop);
@@ -1309,20 +1194,15 @@ function renderKanbanBoard(
         event.stopPropagation();
         card.classList.remove("is-drag-over");
         setDragOver(false);
-        clearColumnIndicators();
-        const columnPayload = readColumnDragPayload(event);
-        if (columnPayload) {
-          const nextBoard = cloneBoard(board);
-          const info = getColumnDropInfo(event.clientX);
-          if (!info) return;
-          const movedName = nextBoard.columns[columnPayload.columnIndex]?.name;
-          moveColumn(nextBoard, columnPayload.columnIndex, info.insertIndex);
-          updateAndRerender(nextBoard, movedName);
-          return;
-        }
+        clearColumnIndicators(dropIndicator);
+        const handled = handleColumnDropEvent(event, dropContext);
+        if (handled) return;
 
         const payload = readCardDragPayload(event);
         if (!payload) return;
+        if (!isValidItemIndex(board, payload.columnIndex, payload.itemIndex)) {
+          return;
+        }
         const nextBoard = cloneBoard(board);
         const rect = card.getBoundingClientRect();
         const isAfter = event.clientY > rect.top + rect.height / 2;
@@ -1353,21 +1233,7 @@ function readCardDragPayload(event: DragEvent): {
     event.dataTransfer.getData("application/x-inline-kanban-card") ||
     event.dataTransfer.getData("text/plain");
   if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as {
-      columnIndex: number;
-      itemIndex: number;
-    };
-    if (
-      typeof parsed.columnIndex !== "number" ||
-      typeof parsed.itemIndex !== "number"
-    ) {
-      return null;
-    }
-    return parsed;
-  } catch {
-    return null;
-  }
+  return parseCardDragPayload(raw);
 }
 
 function hasTransferType(event: DragEvent, type: string): boolean {
@@ -1384,13 +1250,7 @@ function readColumnDragPayload(
     event.dataTransfer.getData("application/x-inline-kanban-column") ||
     event.dataTransfer.getData("text/plain");
   if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as { columnIndex: number };
-    if (typeof parsed.columnIndex !== "number") return null;
-    return parsed;
-  } catch {
-    return null;
-  }
+  return parseColumnDragPayload(raw);
 }
 
 class TextPromptModal extends Modal {

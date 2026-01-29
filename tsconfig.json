@@ -14,5 +14,11 @@
     "sourceMap": true,
     "inlineSources": true
   },
-  "include": ["main.ts"]
+  "include": [
+    "main.ts",
+    "kanban-core.ts",
+    "drag-payload.ts",
+    "vitest.config.ts",
+    "tests/**/*.ts"
+  ]
 }
