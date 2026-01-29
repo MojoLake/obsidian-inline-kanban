@@ -2,7 +2,7 @@
 
 ## Next improvements
 
-- [ ] Preserve original kanban block formatting when updating
+- [x] Preserve original kanban block formatting when updating
 - [x] Reorder cards within a column
 - [x] Add an "Add column" button
 - [x] Reorder columns by dragging headers
@@ -11,8 +11,8 @@
 
 ## Feature parity targets (from obsidian-kanban docs)
 
-- [ ] Create new board via command / context menu
-- [ ] Convert empty note into a kanban board
+- [x] Create new board via command / context menu
+- [x] Convert empty note into a kanban board
 - [ ] Create a new note from a card (note folder + template)
 - [ ] WIP limits in column titles (e.g. `In Progress (5)`)
 - [ ] Date and time pickers for cards via triggers / menu

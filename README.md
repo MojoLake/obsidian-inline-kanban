@@ -29,6 +29,12 @@ You can place any normal Markdown before, between, or after kanban blocks.
 - Use "Add column" to append a new column.
 - Drag the `:::` handle to reorder columns.
 
+## Commands
+
+- `Kanban: Create new Kanban board` creates a new board in the vault root.
+- `Kanban: Convert empty note to Kanban` converts the current empty note.
+- Right-click a folder to create a new board inside it.
+
 ## Development
 
 ```bash

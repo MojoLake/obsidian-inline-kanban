@@ -2,8 +2,10 @@ import {
   App,
   MarkdownPostProcessorContext,
   Modal,
+  Notice,
   Plugin,
   TFile,
+  TFolder,
 } from "obsidian";
 
 type KanbanItem = {
@@ -26,6 +28,17 @@ const pendingColumnHighlights = new Map<
   string,
   { name: string; expiresAt: number }
 >();
+const DEFAULT_KANBAN_TEMPLATE = [
+  "```kanban",
+  "columns:",
+  "  - Todo",
+  "  - Doing",
+  "  - Done",
+  "items:",
+  "  - [Todo] Example task",
+  "```",
+  "",
+].join("\n");
 
 export default class InlineKanbanPlugin extends Plugin {
   onload(): void {
@@ -37,6 +50,75 @@ export default class InlineKanbanPlugin extends Plugin {
         highlightColumnName,
       });
     });
+
+    this.addCommand({
+      id: "create-kanban-board",
+      name: "Create new Kanban board",
+      callback: () => {
+        void this.createKanbanBoard();
+      },
+    });
+
+    this.addCommand({
+      id: "convert-empty-note-to-kanban",
+      name: "Convert empty note to Kanban",
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        if (!file) return false;
+        if (checking) return true;
+        void this.convertEmptyNote(file);
+        return true;
+      },
+    });
+
+    this.registerEvent(
+      this.app.workspace.on("file-menu", (menu, file) => {
+        if (file instanceof TFolder) {
+          menu.addItem((item) => {
+            item
+              .setTitle("New Kanban board")
+              .setIcon("layout-grid")
+              .onClick(() => {
+                void this.createKanbanBoard(file);
+              });
+          });
+          return;
+        }
+
+        if (file instanceof TFile) {
+          menu.addItem((item) => {
+            item
+              .setTitle("Convert empty note to Kanban")
+              .setIcon("layout-grid")
+              .onClick(() => {
+                void this.convertEmptyNote(file);
+              });
+          });
+        }
+      }),
+    );
+  }
+
+  private async createKanbanBoard(folder?: TFolder): Promise<void> {
+    const folderPath = folder?.path ?? "";
+    const fileName = await getUniqueFileName(
+      this.app,
+      folderPath,
+      "Kanban Board",
+    );
+    const filePath = folderPath ? `${folderPath}/${fileName}` : fileName;
+    const file = await this.app.vault.create(filePath, DEFAULT_KANBAN_TEMPLATE);
+    await this.app.workspace.getLeaf(true).openFile(file);
+  }
+
+  private async convertEmptyNote(file: TFile): Promise<void> {
+    const contents = await this.app.vault.read(file);
+    if (contents.trim().length > 0) {
+      new Notice("This note is not empty.");
+      return;
+    }
+    await this.app.vault.modify(file, DEFAULT_KANBAN_TEMPLATE);
+    new Notice("Converted to Kanban board.");
   }
 }
 
@@ -152,6 +234,27 @@ function splitCommaList(raw: string): string[] {
 
 function normalizeKey(value: string): string {
   return value.trim().toLowerCase();
+}
+
+async function getUniqueFileName(
+  app: App,
+  folderPath: string,
+  baseName: string,
+): Promise<string> {
+  const extension = ".md";
+  const normalizedFolder = folderPath ? `${folderPath}/` : "";
+  let index = 0;
+
+  while (index < 1000) {
+    const suffix = index === 0 ? "" : ` ${index}`;
+    const candidate = `${baseName}${suffix}${extension}`;
+    const path = `${normalizedFolder}${candidate}`;
+    const existing = app.vault.getAbstractFileByPath(path);
+    if (!existing) return candidate;
+    index += 1;
+  }
+
+  return `${baseName} ${Date.now()}${extension}`;
 }
 
 function setPendingColumnHighlight(path: string, name: string): void {
