@@ -2,6 +2,27 @@
   margin: 0.75em 0;
 }
 
+.inline-kanban .kanban-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 6px;
+}
+
+.inline-kanban .kanban-add-column {
+  border: none;
+  border-radius: 4px;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  cursor: pointer;
+  font-size: 0.85em;
+  line-height: 1.2;
+  padding: 4px 8px;
+}
+
+.inline-kanban .kanban-add-column:hover {
+  opacity: 0.9;
+}
+
 .inline-kanban .kanban-board {
   display: flex;
   align-items: flex-start;
@@ -17,6 +38,15 @@
   min-width: 220px;
   max-width: 320px;
   padding: 8px;
+}
+
+.inline-kanban .kanban-column.is-drag-over {
+  outline: 2px dashed var(--interactive-accent);
+  outline-offset: 2px;
+}
+
+.inline-kanban .kanban-column.is-column-dragging {
+  opacity: 0.7;
 }
 
 .inline-kanban .kanban-column-header {
@@ -70,6 +100,11 @@
   line-height: 1.35;
 }
 
+.inline-kanban .kanban-card.is-drag-over {
+  outline: 2px dashed var(--interactive-accent);
+  outline-offset: 2px;
+}
+
 .inline-kanban .kanban-card.is-dragging {
   opacity: 0.6;
   cursor: grabbing;
@@ -78,4 +113,15 @@
 .inline-kanban .kanban-empty {
   color: var(--text-muted);
   font-style: italic;
+}
+
+.kanban-add-input {
+  width: 100%;
+}
+
+.kanban-add-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 12px;
 }

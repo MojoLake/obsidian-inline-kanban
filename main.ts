@@ -245,6 +245,64 @@ function isFenceLine(line: string): boolean {
   return /^(```|~~~)/.test(line.trim());
 }
 
+function moveCard(
+  board: KanbanBoard,
+  fromColumnIndex: number,
+  fromItemIndex: number,
+  toColumnIndex: number,
+  toItemIndex: number,
+): void {
+  const sourceColumn = board.columns[fromColumnIndex];
+  const targetColumn = board.columns[toColumnIndex];
+  if (!sourceColumn || !targetColumn) return;
+
+  const [moved] = sourceColumn.items.splice(fromItemIndex, 1);
+  if (moved == null) return;
+
+  let insertIndex = toItemIndex;
+  if (fromColumnIndex === toColumnIndex && fromItemIndex < toItemIndex) {
+    insertIndex -= 1;
+  }
+
+  if (insertIndex < 0) insertIndex = 0;
+  if (insertIndex > targetColumn.items.length) {
+    insertIndex = targetColumn.items.length;
+  }
+
+  targetColumn.items.splice(insertIndex, 0, moved);
+}
+
+function moveColumn(
+  board: KanbanBoard,
+  fromIndex: number,
+  toIndex: number,
+): void {
+  const columns = board.columns;
+  if (fromIndex < 0 || fromIndex >= columns.length) return;
+  if (toIndex < 0) toIndex = 0;
+  if (toIndex > columns.length) toIndex = columns.length;
+
+  const [moved] = columns.splice(fromIndex, 1);
+  if (!moved) return;
+
+  let insertIndex = toIndex;
+  if (fromIndex < toIndex) insertIndex -= 1;
+  if (insertIndex < 0) insertIndex = 0;
+  if (insertIndex > columns.length) insertIndex = columns.length;
+
+  columns.splice(insertIndex, 0, moved);
+}
+
+function getColumnInsertIndex(
+  event: DragEvent,
+  columnIndex: number,
+  columnEl: HTMLElement,
+): number {
+  const rect = columnEl.getBoundingClientRect();
+  const isAfter = event.clientX > rect.left + rect.width / 2;
+  return isAfter ? columnIndex + 1 : columnIndex;
+}
+
 function renderKanbanBoard(
   board: KanbanBoard,
   container: HTMLElement,
@@ -253,6 +311,10 @@ function renderKanbanBoard(
 ): void {
   container.innerHTML = "";
   container.classList.add("inline-kanban");
+  const toolbar = document.createElement("div");
+  toolbar.className = "kanban-toolbar";
+  container.appendChild(toolbar);
+
   const boardEl = document.createElement("div");
   boardEl.className = "kanban-board";
   container.appendChild(boardEl);
@@ -274,6 +336,31 @@ function renderKanbanBoard(
     rerender(nextBoard);
   };
 
+  const addColumnButton = document.createElement("button");
+  addColumnButton.className = "kanban-add-column";
+  addColumnButton.type = "button";
+  addColumnButton.textContent = "Add column";
+  addColumnButton.addEventListener("click", () => {
+    const modal = new TextPromptModal(app, {
+      title: "Add column",
+      placeholder: "Column name",
+      submitLabel: "Add",
+      onSubmit: (value) => {
+        const name = value.trim();
+        if (!name) return;
+        const nextBoard = cloneBoard(board);
+        const exists = nextBoard.columns.some(
+          (column) => normalizeKey(column.name) === normalizeKey(name),
+        );
+        if (exists) return;
+        nextBoard.columns.push({ name, items: [] });
+        updateAndRerender(nextBoard);
+      },
+    });
+    modal.open();
+  });
+  toolbar.appendChild(addColumnButton);
+
   board.columns.forEach((column, columnIndex) => {
     const columnEl = document.createElement("div");
     columnEl.className = "kanban-column";
@@ -281,6 +368,7 @@ function renderKanbanBoard(
 
     const header = document.createElement("div");
     header.className = "kanban-column-header";
+    header.setAttribute("draggable", "true");
     const title = document.createElement("span");
     title.className = "kanban-column-title";
     title.textContent = column.name;
@@ -291,10 +379,17 @@ function renderKanbanBoard(
     addButton.type = "button";
     addButton.textContent = "+";
     addButton.addEventListener("click", () => {
-      const modal = new AddCardModal(app, column.name, (text) => {
-        const nextBoard = cloneBoard(board);
-        nextBoard.columns[columnIndex]?.items.push(text.trim());
-        updateAndRerender(nextBoard);
+      const modal = new TextPromptModal(app, {
+        title: `Add card to "${column.name}"`,
+        placeholder: "Card title",
+        submitLabel: "Add",
+        onSubmit: (text) => {
+          const value = text.trim();
+          if (!value) return;
+          const nextBoard = cloneBoard(board);
+          nextBoard.columns[columnIndex]?.items.push(value);
+          updateAndRerender(nextBoard);
+        },
       });
       modal.open();
     });
@@ -304,23 +399,48 @@ function renderKanbanBoard(
     const list = document.createElement("div");
     list.className = "kanban-column-items";
     columnEl.appendChild(list);
+
     const setDragOver = (isOver: boolean): void => {
       list.classList.toggle("is-drag-over", isOver);
+      columnEl.classList.toggle("is-drag-over", isOver);
     };
 
-    const handleDrop = (event: DragEvent): void => {
+    header.addEventListener("dragstart", (event) => {
+      if (!event.dataTransfer) return;
+      event.dataTransfer.setData(
+        "application/x-inline-kanban-column",
+        JSON.stringify({ columnIndex }),
+      );
+      event.dataTransfer.setData("text/plain", "inline-kanban-column");
+      event.dataTransfer.effectAllowed = "move";
+      columnEl.classList.add("is-column-dragging");
+    });
+    header.addEventListener("dragend", () => {
+      columnEl.classList.remove("is-column-dragging");
+    });
+
+    const handleColumnDrop = (event: DragEvent): void => {
       event.preventDefault();
       setDragOver(false);
-      const payload = readDragPayload(event);
+      const columnPayload = readColumnDragPayload(event);
+      if (columnPayload) {
+        const nextBoard = cloneBoard(board);
+        const targetIndex = getColumnInsertIndex(event, columnIndex, columnEl);
+        moveColumn(nextBoard, columnPayload.columnIndex, targetIndex);
+        updateAndRerender(nextBoard);
+        return;
+      }
+
+      const payload = readCardDragPayload(event);
       if (!payload) return;
       const nextBoard = cloneBoard(board);
-      const sourceColumn = nextBoard.columns[payload.columnIndex];
-      if (!sourceColumn) return;
-      const [moved] = sourceColumn.items.splice(payload.itemIndex, 1);
-      if (!moved) return;
-      const targetColumn = nextBoard.columns[columnIndex];
-      if (!targetColumn) return;
-      targetColumn.items.push(moved);
+      moveCard(
+        nextBoard,
+        payload.columnIndex,
+        payload.itemIndex,
+        columnIndex,
+        nextBoard.columns[columnIndex]?.items.length ?? 0,
+      );
       updateAndRerender(nextBoard);
     };
 
@@ -338,7 +458,7 @@ function renderKanbanBoard(
         setDragOver(false);
       }
     });
-    columnEl.addEventListener("drop", handleDrop);
+    columnEl.addEventListener("drop", handleColumnDrop);
 
     column.items.forEach((item, itemIndex) => {
       const card = document.createElement("div");
@@ -348,12 +468,54 @@ function renderKanbanBoard(
       card.addEventListener("dragstart", (event) => {
         if (!event.dataTransfer) return;
         event.dataTransfer.setData(
-          "application/x-inline-kanban",
+          "application/x-inline-kanban-card",
           JSON.stringify({ columnIndex, itemIndex }),
         );
-        event.dataTransfer.setData("text/plain", "inline-kanban");
+        event.dataTransfer.setData("text/plain", "inline-kanban-card");
         event.dataTransfer.effectAllowed = "move";
         card.classList.add("is-dragging");
+      });
+      card.addEventListener("dragover", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+        card.classList.add("is-drag-over");
+      });
+      card.addEventListener("dragleave", () => {
+        card.classList.remove("is-drag-over");
+      });
+      card.addEventListener("drop", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        card.classList.remove("is-drag-over");
+        setDragOver(false);
+        const columnPayload = readColumnDragPayload(event);
+        if (columnPayload) {
+          const nextBoard = cloneBoard(board);
+          const targetIndex = getColumnInsertIndex(
+            event,
+            columnIndex,
+            columnEl,
+          );
+          moveColumn(nextBoard, columnPayload.columnIndex, targetIndex);
+          updateAndRerender(nextBoard);
+          return;
+        }
+
+        const payload = readCardDragPayload(event);
+        if (!payload) return;
+        const nextBoard = cloneBoard(board);
+        const rect = card.getBoundingClientRect();
+        const isAfter = event.clientY > rect.top + rect.height / 2;
+        const targetIndex = isAfter ? itemIndex + 1 : itemIndex;
+        moveCard(
+          nextBoard,
+          payload.columnIndex,
+          payload.itemIndex,
+          columnIndex,
+          targetIndex,
+        );
+        updateAndRerender(nextBoard);
       });
       card.addEventListener("dragend", () => {
         card.classList.remove("is-dragging");
@@ -363,13 +525,13 @@ function renderKanbanBoard(
   });
 }
 
-function readDragPayload(event: DragEvent): {
+function readCardDragPayload(event: DragEvent): {
   columnIndex: number;
   itemIndex: number;
 } | null {
   if (!event.dataTransfer) return null;
   const raw =
-    event.dataTransfer.getData("application/x-inline-kanban") ||
+    event.dataTransfer.getData("application/x-inline-kanban-card") ||
     event.dataTransfer.getData("text/plain");
   if (!raw) return null;
   try {
@@ -389,31 +551,63 @@ function readDragPayload(event: DragEvent): {
   }
 }
 
-class AddCardModal extends Modal {
-  private readonly columnName: string;
+function readColumnDragPayload(
+  event: DragEvent,
+): { columnIndex: number } | null {
+  if (!event.dataTransfer) return null;
+  const raw =
+    event.dataTransfer.getData("application/x-inline-kanban-column") ||
+    event.dataTransfer.getData("text/plain");
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as { columnIndex: number };
+    if (typeof parsed.columnIndex !== "number") return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+class TextPromptModal extends Modal {
+  private readonly title: string;
+  private readonly placeholder: string;
+  private readonly submitLabel: string;
   private readonly onSubmit: (text: string) => void;
 
-  constructor(app: App, columnName: string, onSubmit: (text: string) => void) {
+  constructor(
+    app: App,
+    options: {
+      title: string;
+      placeholder?: string;
+      submitLabel?: string;
+      onSubmit: (text: string) => void;
+    },
+  ) {
     super(app);
-    this.columnName = columnName;
-    this.onSubmit = onSubmit;
+    this.title = options.title;
+    this.placeholder = options.placeholder ?? "";
+    this.submitLabel = options.submitLabel ?? "Add";
+    this.onSubmit = options.onSubmit;
   }
 
   onOpen(): void {
     const { contentEl } = this;
     contentEl.empty();
     contentEl.createEl("h3", {
-      text: `Add card to "${this.columnName}"`,
+      text: this.title,
     });
 
     const input = contentEl.createEl("input", {
       type: "text",
       cls: "kanban-add-input",
     });
+    if (this.placeholder) {
+      input.setAttr("placeholder", this.placeholder);
+    }
     input.focus();
 
     const actions = contentEl.createDiv({ cls: "kanban-add-actions" });
-    const addButton = actions.createEl("button", { text: "Add" });
+    const addButton = actions.createEl("button", { text: this.submitLabel });
     const cancelButton = actions.createEl("button", { text: "Cancel" });
 
     const submit = (): void => {

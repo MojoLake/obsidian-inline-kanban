@@ -25,6 +25,9 @@ You can place any normal Markdown before, between, or after kanban blocks.
 
 - Use the `+` button in a column header to add a card.
 - Drag cards between columns to change status.
+- Drag cards within a column to reorder.
+- Use "Add column" to append a new column.
+- Drag column headers to reorder columns.
 
 ## Development
 
