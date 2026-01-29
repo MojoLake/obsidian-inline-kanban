@@ -1,0 +1,10 @@
+{
+  "id": "inline-kanban",
+  "name": "Inline Kanban",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Render multiple kanban boards inside a note using fenced code blocks.",
+  "author": "Your Name",
+  "authorUrl": "",
+  "isDesktopOnly": false
+}

@@ -1,0 +1,44 @@
+.inline-kanban {
+  margin: 0.75em 0;
+}
+
+.inline-kanban .kanban-board {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.inline-kanban .kanban-column {
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  min-width: 220px;
+  max-width: 320px;
+  padding: 8px;
+}
+
+.inline-kanban .kanban-column-header {
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.inline-kanban .kanban-column-items {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.inline-kanban .kanban-card {
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  line-height: 1.35;
+}
+
+.inline-kanban .kanban-empty {
+  color: var(--text-muted);
+  font-style: italic;
+}
