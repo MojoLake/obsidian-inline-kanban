@@ -1,5 +1,10 @@
 # TODO
 
+## Now
+
+- [x] ability to remove notes
+- [x] when dragging note and get to the "end" of the screen, start scrolling in the correct way
+
 ## Next improvements
 
 - [x] Preserve original kanban block formatting when updating
