@@ -531,10 +531,15 @@ function resolveNoteFolderPath(
   sourcePath?: string,
 ): string {
   const trimmed = noteFolder.trim();
-  if (trimmed) return trimmed;
-  if (!sourcePath) return "";
+  if (!sourcePath) return trimmed;
   const lastSlash = sourcePath.lastIndexOf("/");
-  return lastSlash === -1 ? "" : sourcePath.slice(0, lastSlash);
+  const fileName =
+    lastSlash === -1 ? sourcePath : sourcePath.slice(lastSlash + 1);
+  const lastDot = fileName.lastIndexOf(".");
+  const baseName = lastDot > 0 ? fileName.slice(0, lastDot) : fileName;
+  if (trimmed) return `${trimmed}/${baseName}`;
+  const parentFolder = lastSlash === -1 ? "" : sourcePath.slice(0, lastSlash);
+  return parentFolder ? `${parentFolder}/${baseName}` : baseName;
 }
 
 async function getNoteTemplateContents(
@@ -1412,7 +1417,7 @@ class InlineKanbanSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("New note folder")
       .setDesc(
-        "Folder for notes created from cards. Leave blank to use the board folder.",
+        "Folder for notes created from cards. Always uses a board-named subfolder.",
       )
       .addText((text) =>
         text

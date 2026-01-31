@@ -32,7 +32,7 @@ WIP limits can be added to column names like `In Progress (5)`.
 - Right-click a card to create a note from it.
 - Double-click a column title or card to rename it.
 - Use the card context menu to add `@YYYY-MM-DD` or `@@HH:mm`.
-- Ctrl/Cmd-click a card to open or create its note.
+- Ctrl/Cmd-click a card to open or create its note in a board-named subfolder (inside the custom note folder if set).
 
 ## Commands
 
