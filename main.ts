@@ -34,6 +34,7 @@ const pendingColumnHighlights = new Map<
   string,
   { name: string; expiresAt: number }
 >();
+const boardScrollPositions = new Map<string, number>();
 const DEFAULT_KANBAN_TEMPLATE = [
   "```kanban",
   "columns:",
@@ -57,6 +58,7 @@ export default class InlineKanbanPlugin extends Plugin {
       const board = parseKanbanSource(source);
       const updateBoard = createBoardUpdater(this.app, ctx, el);
       const highlightColumnName = getPendingColumnHighlight(ctx.sourcePath);
+      const boardKey = getBoardKey(ctx, el);
       renderKanbanBoard(
         board,
         el,
@@ -64,7 +66,7 @@ export default class InlineKanbanPlugin extends Plugin {
         this.app,
         this.settings,
         ctx.sourcePath,
-        { highlightColumnName },
+        { highlightColumnName, boardKey },
       );
     });
 
@@ -211,6 +213,15 @@ function getPendingColumnHighlight(path: string): string | undefined {
     return undefined;
   }
   return entry.name;
+}
+
+function getBoardKey(
+  ctx: MarkdownPostProcessorContext,
+  container: HTMLElement,
+): string | undefined {
+  const section = ctx.getSectionInfo(container);
+  if (section?.lineStart == null) return ctx.sourcePath || undefined;
+  return `${ctx.sourcePath}:${section.lineStart}`;
 }
 
 function cloneBoard(board: KanbanBoard): KanbanBoard {
@@ -767,6 +778,7 @@ function handleColumnDropEvent(
 
 type RenderOptions = {
   highlightColumnName?: string;
+  boardKey?: string;
 };
 
 function renderKanbanBoard(
@@ -778,9 +790,26 @@ function renderKanbanBoard(
   sourcePath?: string,
   options: RenderOptions = {},
 ): void {
+  const boardKey = options.boardKey;
+  const existingBoardEl = container.querySelector<HTMLElement>(".kanban-board");
+  const preservedScrollLeft =
+    existingBoardEl?.scrollLeft ??
+    (boardKey ? (boardScrollPositions.get(boardKey) ?? 0) : 0);
   container.innerHTML = "";
   container.classList.add("inline-kanban");
   const { toolbar, boardEl, dropIndicator } = createBoardShell(container);
+  const restoreScrollLeft = (): void => {
+    if (!Number.isFinite(preservedScrollLeft)) return;
+    requestAnimationFrame(() => {
+      boardEl.scrollLeft = preservedScrollLeft;
+    });
+  };
+  restoreScrollLeft();
+  if (boardKey) {
+    boardEl.addEventListener("scroll", () => {
+      boardScrollPositions.set(boardKey, boardEl.scrollLeft);
+    });
+  }
 
   if (board.columns.length === 0) {
     renderEmptyBoard(boardEl);
@@ -798,7 +827,7 @@ function renderKanbanBoard(
       app,
       settings,
       sourcePath,
-      nextOptions,
+      { ...nextOptions, boardKey },
     );
   };
 
@@ -806,6 +835,9 @@ function renderKanbanBoard(
     nextBoard: KanbanBoard,
     highlightColumnName?: string,
   ): void => {
+    if (boardKey) {
+      boardScrollPositions.set(boardKey, boardEl.scrollLeft);
+    }
     updateBoard(nextBoard, highlightColumnName);
     rerender(nextBoard, highlightColumnName ? { highlightColumnName } : {});
   };
