@@ -8,6 +8,7 @@ export type KanbanColumn = {
   rawName: string;
   statusName: string;
   wipLimit?: number;
+  color?: string;
   items: string[];
 };
 
@@ -19,6 +20,7 @@ export type ColumnDefinition = {
   rawName: string;
   baseName: string;
   wipLimit?: number;
+  color?: string;
 };
 
 export const DEFAULT_COLUMN = "Uncategorized";
@@ -84,6 +86,9 @@ export function parseKanbanSource(source: string): KanbanBoard {
       if (!existing.name) existing.name = definition.baseName;
       if (existing.wipLimit == null && definition.wipLimit != null) {
         existing.wipLimit = definition.wipLimit;
+      }
+      if (!existing.color && definition.color) {
+        existing.color = definition.color;
       }
       return existing;
     }
@@ -177,19 +182,27 @@ function splitCommaList(raw: string): string[] {
 
 export function parseColumnDefinition(rawName: string): ColumnDefinition {
   const trimmed = rawName.trim();
-  const match = /^(.*?)(?:\s*\((\d+)\))\s*$/.exec(trimmed);
+  let working = trimmed;
+  let color: string | undefined;
+  const colorMatch = /^(.*?)(?:\s*\{(#[0-9a-fA-F]{3,8})\})\s*$/.exec(working);
+  if (colorMatch) {
+    working = colorMatch[1].trim();
+    color = normalizeHexColor(colorMatch[2]);
+  }
+  const match = /^(.*?)(?:\s*\((\d+)\))\s*$/.exec(working);
   if (!match) {
-    return { rawName: trimmed, baseName: trimmed };
+    return { rawName: trimmed, baseName: working || trimmed, color };
   }
   const baseName = match[1].trim();
   const limit = Number(match[2]);
   if (!Number.isFinite(limit)) {
-    return { rawName: trimmed, baseName: trimmed };
+    return { rawName: trimmed, baseName: working || trimmed, color };
   }
   return {
     rawName: trimmed,
-    baseName: baseName || trimmed,
+    baseName: baseName || working || trimmed,
     wipLimit: limit,
+    color,
   };
 }
 
@@ -203,11 +216,21 @@ export function createColumnFromDefinition(
     statusName: name,
     items: [],
     wipLimit: definition.wipLimit,
+    color: definition.color,
   };
 }
 
 function normalizeKey(value: string): string {
   return value.trim().toLowerCase();
+}
+
+function normalizeHexColor(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (!/^#[0-9a-f]{3}([0-9a-f]{3})?([0-9a-f]{2})?$/.test(normalized)) {
+    return undefined;
+  }
+  return normalized;
 }
 
 export function normalizeColumnKey(value: string): string {

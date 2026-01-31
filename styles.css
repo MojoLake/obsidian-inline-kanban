@@ -33,6 +33,7 @@
 }
 
 .inline-kanban .kanban-column {
+  --kanban-column-color: transparent;
   background: var(--background-secondary);
   border: 1px solid var(--background-modifier-border);
   border-radius: 8px;
@@ -40,6 +41,11 @@
   max-width: 320px;
   padding: 8px;
   position: relative;
+}
+
+.inline-kanban .kanban-column.has-color {
+  border-color: var(--kanban-column-color);
+  box-shadow: inset 0 3px 0 0 var(--kanban-column-color);
 }
 
 .inline-kanban .kanban-column.is-drag-over {
@@ -182,6 +188,12 @@
 
 .kanban-add-input {
   width: 100%;
+}
+
+.kanban-color-input {
+  width: 100%;
+  height: 36px;
+  padding: 0;
 }
 
 .kanban-add-actions {

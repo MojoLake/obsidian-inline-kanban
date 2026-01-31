@@ -13,6 +13,7 @@ import {
 } from "obsidian";
 import {
   createColumnFromDefinition,
+  DEFAULT_COLUMN,
   normalizeColumnKey,
   parseColumnDefinition,
   parseKanbanSource,
@@ -224,6 +225,31 @@ function getBoardKey(
   return `${ctx.sourcePath}:${section.lineStart}`;
 }
 
+function normalizeHexColor(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (!/^#[0-9a-f]{3}([0-9a-f]{3})?([0-9a-f]{2})?$/.test(normalized)) {
+    return undefined;
+  }
+  return normalized;
+}
+
+function buildColumnRawName(
+  baseName: string,
+  wipLimit?: number,
+  color?: string,
+): string {
+  const safeName = baseName.trim() || DEFAULT_COLUMN;
+  let rawName = safeName;
+  if (typeof wipLimit === "number") {
+    rawName = `${rawName} (${wipLimit})`;
+  }
+  if (color) {
+    rawName = `${rawName} {${color}}`;
+  }
+  return rawName;
+}
+
 function cloneBoard(board: KanbanBoard): KanbanBoard {
   return {
     columns: board.columns.map((column) => ({
@@ -231,6 +257,7 @@ function cloneBoard(board: KanbanBoard): KanbanBoard {
       rawName: column.rawName,
       statusName: column.statusName,
       wipLimit: column.wipLimit,
+      color: column.color,
       items: [...column.items],
     })),
   };
@@ -907,6 +934,10 @@ function renderKanbanBoard(
     if (highlightKey && normalizeColumnKey(column.name) === highlightKey) {
       columnEl.classList.add("is-column-highlight");
     }
+    if (column.color) {
+      columnEl.classList.add("has-color");
+      columnEl.style.setProperty("--kanban-column-color", column.color);
+    }
     boardEl.appendChild(columnEl);
 
     const header = document.createElement("div");
@@ -954,6 +985,33 @@ function renderKanbanBoard(
       modal.open();
     };
 
+    const applyColumnColor = (nextColor?: string): void => {
+      const nextBoard = cloneBoard(board);
+      const target = nextBoard.columns[columnIndex];
+      if (!target) return;
+      target.color = nextColor;
+      target.rawName = buildColumnRawName(
+        target.name,
+        target.wipLimit,
+        nextColor,
+      );
+      updateAndRerender(nextBoard, target.name);
+    };
+
+    const promptSetColumnColor = (): void => {
+      const modal = new ColorPromptModal(app, {
+        title: `Set color for "${column.name}"`,
+        submitLabel: "Set color",
+        initialValue: column.color,
+        onSubmit: (value) => {
+          const nextColor = normalizeHexColor(value);
+          if (!nextColor) return;
+          applyColumnColor(nextColor);
+        },
+      });
+      modal.open();
+    };
+
     title.addEventListener("dblclick", (event) => {
       event.preventDefault();
       promptRenameColumn();
@@ -969,6 +1027,24 @@ function renderKanbanBoard(
             promptRenameColumn();
           });
       });
+      menu.addItem((menuItem) => {
+        menuItem
+          .setTitle("Set column color")
+          .setIcon("palette")
+          .onClick(() => {
+            promptSetColumnColor();
+          });
+      });
+      if (column.color) {
+        menu.addItem((menuItem) => {
+          menuItem
+            .setTitle("Clear column color")
+            .setIcon("x")
+            .onClick(() => {
+              applyColumnColor(undefined);
+            });
+        });
+      }
       menu.showAtMouseEvent(event);
     });
 
@@ -1346,6 +1422,60 @@ class TextPromptModal extends Modal {
     };
 
     addButton.addEventListener("click", submit);
+    cancelButton.addEventListener("click", () => this.close());
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") submit();
+      if (event.key === "Escape") this.close();
+    });
+  }
+}
+
+class ColorPromptModal extends Modal {
+  private readonly title: string;
+  private readonly submitLabel: string;
+  private readonly onSubmit: (color: string) => void;
+  private readonly initialValue: string;
+
+  constructor(
+    app: App,
+    options: {
+      title: string;
+      submitLabel?: string;
+      initialValue?: string;
+      onSubmit: (color: string) => void;
+    },
+  ) {
+    super(app);
+    this.title = options.title;
+    this.submitLabel = options.submitLabel ?? "Set";
+    this.initialValue = options.initialValue ?? "";
+    this.onSubmit = options.onSubmit;
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h3", {
+      text: this.title,
+    });
+
+    const input = contentEl.createEl("input", {
+      type: "color",
+      cls: "kanban-color-input",
+    });
+    input.value = normalizeHexColor(this.initialValue) ?? "#64748b";
+    input.focus();
+
+    const actions = contentEl.createDiv({ cls: "kanban-add-actions" });
+    const setButton = actions.createEl("button", { text: this.submitLabel });
+    const cancelButton = actions.createEl("button", { text: "Cancel" });
+
+    const submit = (): void => {
+      this.onSubmit(input.value);
+      this.close();
+    };
+
+    setButton.addEventListener("click", submit);
     cancelButton.addEventListener("click", () => this.close());
     input.addEventListener("keydown", (event) => {
       if (event.key === "Enter") submit();
