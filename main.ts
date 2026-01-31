@@ -27,6 +27,9 @@ type InlineKanbanSettings = {
 };
 const HIGHLIGHT_DURATION_MS = 900;
 const MAX_FILE_NAME_ATTEMPTS = 1000;
+const AUTO_SCROLL_MAX_SPEED = 12; // pixels per frame at max intensity
+const AUTO_SCROLL_EDGE_SIZE = 80; // smaller edge zone for quicker activation
+const AUTO_SCROLL_MIN_SPEED = 1.5; // minimum speed to start scrolling immediately
 const DEFAULT_SETTINGS: InlineKanbanSettings = {
   noteFolder: "",
   noteTemplatePath: "",
@@ -906,20 +909,91 @@ function renderKanbanBoard(
     updateAndRerender,
   };
 
-  const handleAutoScroll = (clientX: number): void => {
+  let autoScrollTarget = 0;
+  let autoScrollVelocity = 0;
+  let autoScrollRemainder = 0;
+  let autoScrollFrame: number | null = null;
+
+  const startAutoScrollLoop = (): void => {
+    if (autoScrollFrame != null) return;
+    const tick = (): void => {
+      // Faster lerp (0.2) for responsive feel while still being smooth
+      autoScrollVelocity += (autoScrollTarget - autoScrollVelocity) * 0.2;
+      const step = autoScrollVelocity;
+      if (Math.abs(step) < 0.1 && Math.abs(autoScrollTarget) < 0.1) {
+        autoScrollVelocity = 0;
+        autoScrollRemainder = 0;
+        autoScrollFrame = null;
+        return;
+      }
+      autoScrollRemainder += step;
+      const intStep = Math.trunc(autoScrollRemainder);
+      if (intStep !== 0) {
+        autoScrollRemainder -= intStep;
+        const maxScrollLeft = Math.max(
+          0,
+          boardEl.scrollWidth - boardEl.clientWidth,
+        );
+        const nextScroll = Math.max(
+          0,
+          Math.min(boardEl.scrollLeft + intStep, maxScrollLeft),
+        );
+        boardEl.scrollLeft = nextScroll;
+      }
+      autoScrollFrame = requestAnimationFrame(tick);
+    };
+    autoScrollFrame = requestAnimationFrame(tick);
+  };
+
+  const updateAutoScroll = (clientX?: number): void => {
     const rect = boardEl.getBoundingClientRect();
-    const edgeSize = 48;
-    const maxSpeed = 20;
-    if (rect.width <= edgeSize * 2) return;
-    if (clientX < rect.left + edgeSize) {
-      const strength = (rect.left + edgeSize - clientX) / edgeSize;
-      boardEl.scrollLeft -= Math.ceil(maxSpeed * Math.min(1, strength));
+    const edgeSize = Math.max(
+      24,
+      Math.min(AUTO_SCROLL_EDGE_SIZE, rect.width * 0.45),
+    );
+    const maxSpeed = AUTO_SCROLL_MAX_SPEED;
+    const maxScrollLeft = Math.max(
+      0,
+      boardEl.scrollWidth - boardEl.clientWidth,
+    );
+
+    if (clientX == null || rect.width <= edgeSize * 2 || maxScrollLeft <= 0) {
+      autoScrollTarget = 0;
+      startAutoScrollLoop();
       return;
     }
-    if (clientX > rect.right - edgeSize) {
-      const strength = (clientX - (rect.right - edgeSize)) / edgeSize;
-      boardEl.scrollLeft += Math.ceil(maxSpeed * Math.min(1, strength));
+
+    let direction = 0;
+    let strength = 0;
+    if (clientX < rect.left + edgeSize) {
+      direction = -1;
+      strength = (rect.left + edgeSize - clientX) / edgeSize;
+    } else if (clientX > rect.right - edgeSize) {
+      direction = 1;
+      strength = (clientX - (rect.right - edgeSize)) / edgeSize;
     }
+
+    if (direction === 0) {
+      autoScrollTarget = 0;
+      startAutoScrollLoop();
+      return;
+    }
+
+    if (
+      (direction < 0 && boardEl.scrollLeft <= 0) ||
+      (direction > 0 && boardEl.scrollLeft >= maxScrollLeft)
+    ) {
+      autoScrollTarget = 0;
+      startAutoScrollLoop();
+      return;
+    }
+
+    const eased = Math.min(1, strength) ** 2;
+    // Use min speed for immediate response, then scale up to max
+    const speed =
+      AUTO_SCROLL_MIN_SPEED + (maxSpeed - AUTO_SCROLL_MIN_SPEED) * eased;
+    autoScrollTarget = direction * speed;
+    startAutoScrollLoop();
   };
 
   boardEl.addEventListener("dragover", (event) => {
@@ -936,13 +1010,14 @@ function renderKanbanBoard(
     if (isColumnDrag) {
       showColumnIndicatorAt(dropContext, event.clientX);
     }
-    handleAutoScroll(event.clientX);
+    updateAutoScroll(event.clientX);
   });
 
   boardEl.addEventListener("dragleave", (event) => {
     const relatedTarget = event.relatedTarget;
     if (!isEventTargetNode(relatedTarget) || !boardEl.contains(relatedTarget)) {
       clearColumnIndicators(dropIndicator);
+      updateAutoScroll();
     }
   });
 
@@ -951,6 +1026,7 @@ function renderKanbanBoard(
     if (!handled) return;
     event.preventDefault();
     clearColumnIndicators(dropIndicator);
+    updateAutoScroll();
   });
 
   const addColumnButton = document.createElement("button");
@@ -1198,7 +1274,7 @@ function renderKanbanBoard(
     columnEl.addEventListener("dragover", (event) => {
       event.preventDefault();
       if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
-      handleAutoScroll(event.clientX);
+      updateAutoScroll(event.clientX);
       if (hasTransferType(event, "application/x-inline-kanban-column")) {
         showColumnIndicatorAt(dropContext, event.clientX);
         setDragOver(false);
@@ -1368,7 +1444,7 @@ function renderKanbanBoard(
         event.preventDefault();
         event.stopPropagation();
         if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
-        handleAutoScroll(event.clientX);
+        updateAutoScroll(event.clientX);
         if (hasTransferType(event, "application/x-inline-kanban-column")) {
           card.classList.remove("is-drag-over");
           return;
@@ -1407,6 +1483,7 @@ function renderKanbanBoard(
       });
       card.addEventListener("dragend", () => {
         card.classList.remove("is-dragging");
+        updateAutoScroll();
       });
       list.appendChild(card);
     });
