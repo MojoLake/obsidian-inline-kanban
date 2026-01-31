@@ -13,6 +13,7 @@
 - [x] Reorder columns by dragging headers
 - [x] Inline edit / rename cards
 - [x] Dev watch + auto-deploy
+- [x] Command to add a new kanban board in the current page.
 
 ## Next on TODO
 

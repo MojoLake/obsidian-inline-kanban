@@ -91,6 +91,18 @@ export default class InlineKanbanPlugin extends Plugin {
       },
     });
 
+    this.addCommand({
+      id: "add-kanban-board-to-current-note",
+      name: "Add Kanban board to current note",
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        if (!file || file.extension !== "md") return false;
+        if (checking) return true;
+        void this.addKanbanBoardToCurrentNote(file);
+        return true;
+      },
+    });
+
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
         if (file instanceof TFolder) {
@@ -139,6 +151,13 @@ export default class InlineKanbanPlugin extends Plugin {
     }
     await this.app.vault.modify(file, DEFAULT_KANBAN_TEMPLATE);
     new Notice("Converted to Kanban board.");
+  }
+
+  private async addKanbanBoardToCurrentNote(file: TFile): Promise<void> {
+    const contents = await this.app.vault.read(file);
+    const nextContents = appendKanbanBoardToContents(contents);
+    await this.app.vault.modify(file, nextContents);
+    new Notice("Added Kanban board to current note.");
   }
 
   async loadSettings(): Promise<void> {
@@ -203,6 +222,17 @@ function setPendingColumnHighlight(path: string, name: string): void {
     name,
     expiresAt: Date.now() + HIGHLIGHT_DURATION_MS,
   });
+}
+
+function appendKanbanBoardToContents(contents: string): string {
+  if (!contents.trim()) return DEFAULT_KANBAN_TEMPLATE;
+  if (/\n\s*\n\s*$/.test(contents)) {
+    return `${contents}${DEFAULT_KANBAN_TEMPLATE}`;
+  }
+  if (/\n\s*$/.test(contents)) {
+    return `${contents}\n${DEFAULT_KANBAN_TEMPLATE}`;
+  }
+  return `${contents}\n\n${DEFAULT_KANBAN_TEMPLATE}`;
 }
 
 function getPendingColumnHighlight(path: string): string | undefined {

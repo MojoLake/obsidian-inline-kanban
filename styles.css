@@ -1,5 +1,6 @@
 .inline-kanban {
   margin: 0.75em 0;
+  --kanban-column-width: 400px;
 }
 
 .inline-kanban .kanban-toolbar {
@@ -37,8 +38,9 @@
   background: var(--background-secondary);
   border: 1px solid var(--background-modifier-border);
   border-radius: 8px;
-  min-width: 220px;
-  max-width: 320px;
+  flex: 0 0 var(--kanban-column-width);
+  min-width: var(--kanban-column-width);
+  max-width: var(--kanban-column-width);
   padding: 8px;
   position: relative;
 }

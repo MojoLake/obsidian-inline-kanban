@@ -36,7 +36,11 @@ WIP limits can be added to column names like `In Progress (5)`.
 
 ## Commands
 
+Commands are available from the Command Palette and cover creating, inserting,
+and converting boards.
+
 - `Kanban: Create new Kanban board` creates a new board in the vault root.
+- `Kanban: Add Kanban board to current note` inserts a new board into the active note.
 - `Kanban: Convert empty note to Kanban` converts the current empty note.
 - Right-click a folder to create a new board inside it.
 
