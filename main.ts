@@ -27,6 +27,7 @@ type InlineKanbanSettings = {
 };
 const HIGHLIGHT_DURATION_MS = 900;
 const MAX_FILE_NAME_ATTEMPTS = 1000;
+const MAX_CARD_NOTE_FILENAME_LENGTH = 40;
 const AUTO_SCROLL_MAX_SPEED = 12; // pixels per frame at max intensity
 const AUTO_SCROLL_EDGE_SIZE = 80; // smaller edge zone for quicker activation
 const AUTO_SCROLL_MIN_SPEED = 1.5; // minimum speed to start scrolling immediately
@@ -298,16 +299,17 @@ function cloneBoard(board: KanbanBoard): KanbanBoard {
 
 function serializeKanbanBoard(board: KanbanBoard): string {
   const lines: string[] = [];
+  const listPrefix = "  - ";
   lines.push("columns:");
   for (const column of board.columns) {
-    lines.push(`  - ${column.rawName}`);
+    lines.push(`${listPrefix}${column.rawName}`);
   }
   lines.push("items:");
   for (const column of board.columns) {
     for (const item of column.items) {
-      const text = item.trim();
-      if (!text) continue;
-      lines.push(`  - [${column.statusName}] ${text}`);
+      const entryLines = formatItemLines(column.statusName, item, "bracket");
+      if (!entryLines.length) continue;
+      lines.push(...formatListEntryLines(entryLines, listPrefix));
     }
   }
   return lines.join("\n");
@@ -423,11 +425,11 @@ function mergeKanbanBlockLines(
   );
 
   const itemStyle = detectItemStyle(itemsSectionLines);
-  const itemEntries: string[] = [];
+  const itemEntries: Array<string | string[]> = [];
   for (const column of board.columns) {
     for (const item of column.items) {
-      const line = formatItemLine(column.statusName, item, itemStyle);
-      if (line) itemEntries.push(line);
+      const lines = formatItemLines(column.statusName, item, itemStyle);
+      if (lines.length) itemEntries.push(lines);
     }
   }
   const itemsSection = buildSectionLines(
@@ -450,37 +452,60 @@ function findHeaderIndex(lines: string[], pattern: RegExp): number {
 
 function buildSectionLines(
   sectionLines: string[],
-  entries: string[],
+  entries: Array<string | string[]>,
   headerLine: string,
 ): string[] {
   const listLineRegex = /^\s*[-*]\s+/;
   let firstListIndex = -1;
   let lastListIndex = -1;
+  let lastListLineIndex = -1;
 
   for (let i = 0; i < sectionLines.length; i += 1) {
     if (listLineRegex.test(sectionLines[i])) {
-      firstListIndex = i;
-      break;
+      if (firstListIndex === -1) {
+        firstListIndex = i;
+      }
+      lastListIndex = i;
+      lastListLineIndex = i;
     }
   }
-  for (let i = sectionLines.length - 1; i >= 0; i -= 1) {
-    if (listLineRegex.test(sectionLines[i])) {
-      lastListIndex = i;
+  if (lastListLineIndex !== -1) {
+    for (let i = lastListLineIndex + 1; i < sectionLines.length; i += 1) {
+      const line = sectionLines[i];
+      if (!line.trim() || /^\s+/.test(line)) {
+        lastListIndex = i;
+        continue;
+      }
       break;
     }
   }
 
   const prefix = getListPrefix(sectionLines, headerLine);
+  const newLines = entries.flatMap((entry) =>
+    formatListEntryLines(entry, prefix),
+  );
 
   if (firstListIndex === -1) {
-    return [...sectionLines, ...entries.map((entry) => `${prefix}${entry}`)];
+    return [...sectionLines, ...newLines];
   }
 
   const leading = sectionLines.slice(0, firstListIndex);
   const trailing = sectionLines.slice(lastListIndex + 1);
-  const newLines = entries.map((entry) => `${prefix}${entry}`);
 
   return [...leading, ...newLines, ...trailing];
+}
+
+function formatListEntryLines(
+  entry: string | string[],
+  prefix: string,
+): string[] {
+  const rawLines = Array.isArray(entry) ? entry : entry.split(/\r?\n/);
+  const lines = rawLines.map((line) => line.trim()).filter(Boolean);
+  if (!lines.length) return [];
+  const continuationIndent = " ".repeat(prefix.length);
+  return lines.map((line, index) =>
+    index === 0 ? `${prefix}${line}` : `${continuationIndent}${line}`,
+  );
 }
 
 function getListPrefix(sectionLines: string[], headerLine: string): string {
@@ -503,14 +528,21 @@ function detectItemStyle(sectionLines: string[]): ItemStyle {
   return "bracket";
 }
 
-function formatItemLine(
+function formatItemLines(
   status: string,
   text: string,
   style: ItemStyle,
-): string {
+): string[] {
   const trimmed = text.trim();
-  if (!trimmed) return "";
-  return style === "colon" ? `${status}: ${trimmed}` : `[${status}] ${trimmed}`;
+  if (!trimmed) return [];
+  const lines = trimmed
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!lines.length) return [];
+  const first =
+    style === "colon" ? `${status}: ${lines[0]}` : `[${status}] ${lines[0]}`;
+  return [first, ...lines.slice(1)];
 }
 
 async function createNoteFromCard(
@@ -546,7 +578,8 @@ async function createNoteFromCard(
     const normalizedFolder = folderPath ? normalizePath(folderPath) : "";
     if (!(await ensureNoteFolder(app, normalizedFolder))) return;
 
-    const baseName = sanitizeFileName(trimmed) || "Kanban Card";
+    const baseName =
+      sanitizeFileName(trimmed, MAX_CARD_NOTE_FILENAME_LENGTH) || "Kanban Card";
     const filePath = normalizedFolder
       ? `${normalizedFolder}/${baseName}.md`
       : `${baseName}.md`;
@@ -636,11 +669,13 @@ async function getNoteTemplateContents(
   }
 }
 
-function sanitizeFileName(raw: string): string {
-  return raw
+function sanitizeFileName(raw: string, maxLength?: number): string {
+  const sanitized = raw
     .replace(/[\\/#%*?:"<>|]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+  if (!maxLength || sanitized.length <= maxLength) return sanitized;
+  return sanitized.slice(0, maxLength).trim();
 }
 
 function extractWikiLinkTarget(text: string): string | null {
@@ -1203,6 +1238,7 @@ function renderKanbanBoard(
         title: `Add card to "${column.name}"`,
         placeholder: "Card title",
         submitLabel: "Add",
+        multiline: true,
         onSubmit: (text) => {
           const value = text.trim();
           if (!value) return;
@@ -1307,6 +1343,7 @@ function renderKanbanBoard(
           placeholder: "Card title",
           submitLabel: "Rename",
           initialValue: item,
+          multiline: true,
           onSubmit: (value) => {
             const name = value.trim();
             if (!name) return;
@@ -1525,6 +1562,7 @@ class TextPromptModal extends Modal {
   private readonly submitLabel: string;
   private readonly onSubmit: (text: string) => void;
   private readonly initialValue: string;
+  private readonly multiline: boolean;
 
   constructor(
     app: App,
@@ -1533,6 +1571,7 @@ class TextPromptModal extends Modal {
       placeholder?: string;
       submitLabel?: string;
       initialValue?: string;
+      multiline?: boolean;
       onSubmit: (text: string) => void;
     },
   ) {
@@ -1541,6 +1580,7 @@ class TextPromptModal extends Modal {
     this.placeholder = options.placeholder ?? "";
     this.submitLabel = options.submitLabel ?? "Add";
     this.initialValue = options.initialValue ?? "";
+    this.multiline = options.multiline ?? false;
     this.onSubmit = options.onSubmit;
   }
 
@@ -1551,12 +1591,19 @@ class TextPromptModal extends Modal {
       text: this.title,
     });
 
-    const input = contentEl.createEl("input", {
-      type: "text",
-      cls: "kanban-add-input",
-    });
+    const input = this.multiline
+      ? contentEl.createEl("textarea", {
+          cls: "kanban-add-input",
+        })
+      : contentEl.createEl("input", {
+          type: "text",
+          cls: "kanban-add-input",
+        });
     if (this.placeholder) {
       input.setAttr("placeholder", this.placeholder);
+    }
+    if (this.multiline) {
+      input.setAttr("rows", "3");
     }
     if (this.initialValue) {
       input.value = this.initialValue;
@@ -1568,7 +1615,7 @@ class TextPromptModal extends Modal {
     const cancelButton = actions.createEl("button", { text: "Cancel" });
 
     const submit = (): void => {
-      const value = input.value.trim();
+      const value = input.value.replace(/\r\n/g, "\n").trim();
       if (!value) return;
       this.onSubmit(value);
       this.close();
@@ -1577,8 +1624,15 @@ class TextPromptModal extends Modal {
     addButton.addEventListener("click", submit);
     cancelButton.addEventListener("click", () => this.close());
     input.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") submit();
-      if (event.key === "Escape") this.close();
+      const keyboardEvent = event as KeyboardEvent;
+      if (
+        keyboardEvent.key === "Enter" &&
+        (!this.multiline || !keyboardEvent.shiftKey)
+      ) {
+        keyboardEvent.preventDefault();
+        submit();
+      }
+      if (keyboardEvent.key === "Escape") this.close();
     });
   }
 }

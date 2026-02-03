@@ -171,6 +171,7 @@
   cursor: grab;
   padding: 6px 8px;
   line-height: 1.35;
+  white-space: pre-line;
 }
 
 .inline-kanban .kanban-card.is-drag-over {

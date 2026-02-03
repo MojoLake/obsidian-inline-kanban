@@ -69,6 +69,13 @@ export function parseKanbanSource(source: string): KanbanBoard {
         continue;
       }
     }
+
+    if (section === "items" && items.length > 0 && /^\s+/.test(rawLine)) {
+      const continuation = line.trim();
+      if (continuation) {
+        items[items.length - 1].text += `\n${continuation}`;
+      }
+    }
   }
 
   const columnMap: Record<string, KanbanColumn> = {};
