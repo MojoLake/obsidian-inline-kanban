@@ -851,6 +851,26 @@ function clearColumnIndicators(dropIndicator: HTMLElement): void {
   dropIndicator.style.opacity = "0";
 }
 
+function getColumnIndexAtX(
+  boardEl: HTMLElement,
+  clientX: number,
+): number | null {
+  const columns = Array.from(
+    boardEl.querySelectorAll<HTMLElement>(".kanban-column"),
+  );
+  if (columns.length === 0) return null;
+  for (let i = 0; i < columns.length; i += 1) {
+    const rect = columns[i].getBoundingClientRect();
+    if (clientX >= rect.left && clientX <= rect.right) return i;
+  }
+  const firstRect = columns[0].getBoundingClientRect();
+  if (clientX < firstRect.left) return 0;
+  const lastIndex = columns.length - 1;
+  const lastRect = columns[lastIndex].getBoundingClientRect();
+  if (clientX > lastRect.right) return lastIndex;
+  return null;
+}
+
 function handleColumnDropEvent(
   event: DragEvent,
   context: ColumnDropContext,
@@ -944,43 +964,72 @@ function renderKanbanBoard(
     updateAndRerender,
   };
 
-  let autoScrollTarget = 0;
-  let autoScrollVelocity = 0;
-  let autoScrollRemainder = 0;
+  let autoScrollTargetX = 0;
+  let autoScrollVelocityX = 0;
+  let autoScrollRemainderX = 0;
+  let autoScrollTargetY = 0;
+  let autoScrollVelocityY = 0;
+  let autoScrollRemainderY = 0;
   let autoScrollFrame: number | null = null;
+  const scrollContainer = findScrollableAncestor(boardEl);
 
   const startAutoScrollLoop = (): void => {
     if (autoScrollFrame != null) return;
     const tick = (): void => {
       // Faster lerp (0.2) for responsive feel while still being smooth
-      autoScrollVelocity += (autoScrollTarget - autoScrollVelocity) * 0.2;
-      const step = autoScrollVelocity;
-      if (Math.abs(step) < 0.1 && Math.abs(autoScrollTarget) < 0.1) {
-        autoScrollVelocity = 0;
-        autoScrollRemainder = 0;
+      autoScrollVelocityX +=
+        (autoScrollTargetX - autoScrollVelocityX) * 0.2;
+      autoScrollVelocityY +=
+        (autoScrollTargetY - autoScrollVelocityY) * 0.2;
+      const stepX = autoScrollVelocityX;
+      const stepY = autoScrollVelocityY;
+      if (
+        Math.abs(stepX) < 0.1 &&
+        Math.abs(autoScrollTargetX) < 0.1 &&
+        Math.abs(stepY) < 0.1 &&
+        Math.abs(autoScrollTargetY) < 0.1
+      ) {
+        autoScrollVelocityX = 0;
+        autoScrollVelocityY = 0;
+        autoScrollRemainderX = 0;
+        autoScrollRemainderY = 0;
         autoScrollFrame = null;
         return;
       }
-      autoScrollRemainder += step;
-      const intStep = Math.trunc(autoScrollRemainder);
-      if (intStep !== 0) {
-        autoScrollRemainder -= intStep;
+      autoScrollRemainderX += stepX;
+      autoScrollRemainderY += stepY;
+      const intStepX = Math.trunc(autoScrollRemainderX);
+      const intStepY = Math.trunc(autoScrollRemainderY);
+      if (intStepX !== 0) {
+        autoScrollRemainderX -= intStepX;
         const maxScrollLeft = Math.max(
           0,
           boardEl.scrollWidth - boardEl.clientWidth,
         );
         const nextScroll = Math.max(
           0,
-          Math.min(boardEl.scrollLeft + intStep, maxScrollLeft),
+          Math.min(boardEl.scrollLeft + intStepX, maxScrollLeft),
         );
         boardEl.scrollLeft = nextScroll;
+      }
+      if (scrollContainer && intStepY !== 0) {
+        autoScrollRemainderY -= intStepY;
+        const maxScrollTop = Math.max(
+          0,
+          scrollContainer.scrollHeight - scrollContainer.clientHeight,
+        );
+        const nextScroll = Math.max(
+          0,
+          Math.min(scrollContainer.scrollTop + intStepY, maxScrollTop),
+        );
+        scrollContainer.scrollTop = nextScroll;
       }
       autoScrollFrame = requestAnimationFrame(tick);
     };
     autoScrollFrame = requestAnimationFrame(tick);
   };
 
-  const updateAutoScroll = (clientX?: number): void => {
+  const updateAutoScroll = (clientX?: number, clientY?: number): void => {
     const rect = boardEl.getBoundingClientRect();
     const edgeSize = Math.max(
       24,
@@ -993,41 +1042,86 @@ function renderKanbanBoard(
     );
 
     if (clientX == null || rect.width <= edgeSize * 2 || maxScrollLeft <= 0) {
-      autoScrollTarget = 0;
+      autoScrollTargetX = 0;
+      startAutoScrollLoop();
+    } else {
+      let direction = 0;
+      let strength = 0;
+      if (clientX < rect.left + edgeSize) {
+        direction = -1;
+        strength = (rect.left + edgeSize - clientX) / edgeSize;
+      } else if (clientX > rect.right - edgeSize) {
+        direction = 1;
+        strength = (clientX - (rect.right - edgeSize)) / edgeSize;
+      }
+
+      if (direction === 0) {
+        autoScrollTargetX = 0;
+      } else if (
+        (direction < 0 && boardEl.scrollLeft <= 0) ||
+        (direction > 0 && boardEl.scrollLeft >= maxScrollLeft)
+      ) {
+        autoScrollTargetX = 0;
+      } else {
+        const eased = Math.min(1, strength) ** 2;
+        // Use min speed for immediate response, then scale up to max
+        const speed =
+          AUTO_SCROLL_MIN_SPEED + (maxSpeed - AUTO_SCROLL_MIN_SPEED) * eased;
+        autoScrollTargetX = direction * speed;
+      }
+      startAutoScrollLoop();
+    }
+
+    if (!scrollContainer) {
+      autoScrollTargetY = 0;
       startAutoScrollLoop();
       return;
     }
 
-    let direction = 0;
-    let strength = 0;
-    if (clientX < rect.left + edgeSize) {
-      direction = -1;
-      strength = (rect.left + edgeSize - clientX) / edgeSize;
-    } else if (clientX > rect.right - edgeSize) {
-      direction = 1;
-      strength = (clientX - (rect.right - edgeSize)) / edgeSize;
-    }
-
-    if (direction === 0) {
-      autoScrollTarget = 0;
-      startAutoScrollLoop();
-      return;
-    }
+    const scrollRect = scrollContainer.getBoundingClientRect();
+    const verticalEdgeSize = Math.max(
+      24,
+      Math.min(AUTO_SCROLL_EDGE_SIZE, scrollRect.height * 0.45),
+    );
+    const maxScrollTop = Math.max(
+      0,
+      scrollContainer.scrollHeight - scrollContainer.clientHeight,
+    );
 
     if (
-      (direction < 0 && boardEl.scrollLeft <= 0) ||
-      (direction > 0 && boardEl.scrollLeft >= maxScrollLeft)
+      clientY == null ||
+      scrollRect.height <= verticalEdgeSize * 2 ||
+      maxScrollTop <= 0
     ) {
-      autoScrollTarget = 0;
+      autoScrollTargetY = 0;
       startAutoScrollLoop();
       return;
     }
 
-    const eased = Math.min(1, strength) ** 2;
-    // Use min speed for immediate response, then scale up to max
-    const speed =
-      AUTO_SCROLL_MIN_SPEED + (maxSpeed - AUTO_SCROLL_MIN_SPEED) * eased;
-    autoScrollTarget = direction * speed;
+    let yDirection = 0;
+    let yStrength = 0;
+    if (clientY < scrollRect.top + verticalEdgeSize) {
+      yDirection = -1;
+      yStrength = (scrollRect.top + verticalEdgeSize - clientY) / verticalEdgeSize;
+    } else if (clientY > scrollRect.bottom - verticalEdgeSize) {
+      yDirection = 1;
+      yStrength =
+        (clientY - (scrollRect.bottom - verticalEdgeSize)) / verticalEdgeSize;
+    }
+
+    if (yDirection === 0) {
+      autoScrollTargetY = 0;
+    } else if (
+      (yDirection < 0 && scrollContainer.scrollTop <= 0) ||
+      (yDirection > 0 && scrollContainer.scrollTop >= maxScrollTop)
+    ) {
+      autoScrollTargetY = 0;
+    } else {
+      const eased = Math.min(1, yStrength) ** 2;
+      const speed =
+        AUTO_SCROLL_MIN_SPEED + (maxSpeed - AUTO_SCROLL_MIN_SPEED) * eased;
+      autoScrollTargetY = yDirection * speed;
+    }
     startAutoScrollLoop();
   };
 
@@ -1045,7 +1139,7 @@ function renderKanbanBoard(
     if (isColumnDrag) {
       showColumnIndicatorAt(dropContext, event.clientX);
     }
-    updateAutoScroll(event.clientX);
+    updateAutoScroll(event.clientX, event.clientY);
   });
 
   boardEl.addEventListener("dragleave", (event) => {
@@ -1058,10 +1152,33 @@ function renderKanbanBoard(
 
   boardEl.addEventListener("drop", (event) => {
     const handled = handleColumnDropEvent(event, dropContext);
-    if (!handled) return;
+    if (handled) {
+      event.preventDefault();
+      clearColumnIndicators(dropIndicator);
+      updateAutoScroll();
+      return;
+    }
+
+    const payload = readCardDragPayload(event);
+    if (!payload) return;
+    if (!isValidItemIndex(board, payload.columnIndex, payload.itemIndex)) {
+      return;
+    }
+    const targetColumnIndex = getColumnIndexAtX(boardEl, event.clientX);
+    if (targetColumnIndex == null) return;
     event.preventDefault();
     clearColumnIndicators(dropIndicator);
     updateAutoScroll();
+
+    const nextBoard = cloneBoard(board);
+    moveCard(
+      nextBoard,
+      payload.columnIndex,
+      payload.itemIndex,
+      targetColumnIndex,
+      nextBoard.columns[targetColumnIndex]?.items.length ?? 0,
+    );
+    updateAndRerender(nextBoard);
   });
 
   const addColumnButton = document.createElement("button");
@@ -1310,7 +1427,7 @@ function renderKanbanBoard(
     columnEl.addEventListener("dragover", (event) => {
       event.preventDefault();
       if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
-      updateAutoScroll(event.clientX);
+      updateAutoScroll(event.clientX, event.clientY);
       if (hasTransferType(event, "application/x-inline-kanban-column")) {
         showColumnIndicatorAt(dropContext, event.clientX);
         setDragOver(false);
@@ -1481,7 +1598,7 @@ function renderKanbanBoard(
         event.preventDefault();
         event.stopPropagation();
         if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
-        updateAutoScroll(event.clientX);
+        updateAutoScroll(event.clientX, event.clientY);
         if (hasTransferType(event, "application/x-inline-kanban-column")) {
           card.classList.remove("is-drag-over");
           return;
@@ -1554,6 +1671,21 @@ function readColumnDragPayload(
     event.dataTransfer.getData("text/plain");
   if (!raw) return null;
   return parseColumnDragPayload(raw);
+}
+
+function findScrollableAncestor(start: HTMLElement): HTMLElement | null {
+  let current: HTMLElement | null = start;
+  while (current) {
+    const style = getComputedStyle(current);
+    const overflowY = style.overflowY;
+    const canScroll =
+      (overflowY === "auto" || overflowY === "scroll") &&
+      current.scrollHeight > current.clientHeight + 1;
+    if (canScroll) return current;
+    current = current.parentElement;
+  }
+  const scrollingElement = document.scrollingElement;
+  return scrollingElement instanceof HTMLElement ? scrollingElement : null;
 }
 
 class TextPromptModal extends Modal {
