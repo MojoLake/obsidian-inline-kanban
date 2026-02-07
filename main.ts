@@ -23,6 +23,7 @@ import { parseCardDragPayload, parseColumnDragPayload } from "./drag-payload";
 
 type InlineKanbanSettings = {
   noteFolder: string;
+  noteFolderPattern: string;
   noteTemplatePath: string;
 };
 const HIGHLIGHT_DURATION_MS = 900;
@@ -33,6 +34,7 @@ const AUTO_SCROLL_EDGE_SIZE = 80; // smaller edge zone for quicker activation
 const AUTO_SCROLL_MIN_SPEED = 1.5; // minimum speed to start scrolling immediately
 const DEFAULT_SETTINGS: InlineKanbanSettings = {
   noteFolder: "",
+  noteFolderPattern: "._{board}",
   noteTemplatePath: "",
 };
 const pendingColumnHighlights = new Map<
@@ -574,7 +576,11 @@ async function createNoteFromCard(
   }
 
   try {
-    const folderPath = resolveNoteFolderPath(settings.noteFolder, sourcePath);
+    const folderPath = resolveNoteFolderPath(
+      settings.noteFolder,
+      settings.noteFolderPattern,
+      sourcePath,
+    );
     const normalizedFolder = folderPath ? normalizePath(folderPath) : "";
     if (!(await ensureNoteFolder(app, normalizedFolder))) return;
 
@@ -599,6 +605,11 @@ async function createNoteFromCard(
       trimmed,
     );
     const file = await app.vault.create(filePath, contents);
+    if (!file) {
+      console.error("Vault returned null for created note", { filePath });
+      new Notice("Failed to create note from card. Check console for details.");
+      return;
+    }
     await app.workspace.getLeaf(true).openFile(file);
     new Notice(`Created note: ${file.path}`);
   } catch (error) {
@@ -632,6 +643,7 @@ async function ensureNoteFolder(
 
 function resolveNoteFolderPath(
   noteFolder: string,
+  noteFolderPattern: string,
   sourcePath?: string,
 ): string {
   const trimmed = noteFolder.trim();
@@ -640,10 +652,22 @@ function resolveNoteFolderPath(
   const fileName =
     lastSlash === -1 ? sourcePath : sourcePath.slice(lastSlash + 1);
   const lastDot = fileName.lastIndexOf(".");
-  const baseName = lastDot > 0 ? fileName.slice(0, lastDot) : fileName;
-  if (trimmed) return `${trimmed}/${baseName}`;
+  const rawBaseName = lastDot > 0 ? fileName.slice(0, lastDot) : fileName;
+  const baseName = sanitizeFileName(rawBaseName) || "Kanban Board";
+  const subfolderName = formatNoteSubfolderName(noteFolderPattern, baseName);
+  if (trimmed) return `${trimmed}/${subfolderName}`;
   const parentFolder = lastSlash === -1 ? "" : sourcePath.slice(0, lastSlash);
-  return parentFolder ? `${parentFolder}/${baseName}` : baseName;
+  return parentFolder ? `${parentFolder}/${subfolderName}` : subfolderName;
+}
+
+function formatNoteSubfolderName(pattern: string, boardName: string): string {
+  const trimmed = pattern.trim();
+  const safeBoardName = sanitizeFileName(boardName) || "Kanban Board";
+  if (!trimmed) return safeBoardName;
+  if (/\{board\}/i.test(trimmed)) {
+    return trimmed.replace(/\{board\}/gi, safeBoardName);
+  }
+  return `${trimmed}${safeBoardName}`;
 }
 
 async function getNoteTemplateContents(
@@ -1926,6 +1950,22 @@ class InlineKanbanSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.noteFolder)
           .onChange(async (value) => {
             this.plugin.settings.noteFolder = value.trim();
+            await this.plugin.saveSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Note subfolder pattern")
+      .setDesc(
+        'Pattern for the board subfolder name. Use "{board}" as the placeholder. Default hides folders with "._".',
+      )
+      .addText((text) =>
+        text
+          .setPlaceholder("._{board}")
+          .setValue(this.plugin.settings.noteFolderPattern)
+          .onChange(async (value) => {
+            this.plugin.settings.noteFolderPattern =
+              value.trim() || "._{board}";
             await this.plugin.saveSettings();
           }),
       );
