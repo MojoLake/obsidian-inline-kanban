@@ -606,8 +606,16 @@ async function createNoteFromCard(
     );
     const file = await app.vault.create(filePath, contents);
     if (!file) {
+      const existingAfterCreate = app.vault.getAbstractFileByPath(filePath);
+      if (existingAfterCreate instanceof TFile) {
+        await app.workspace.getLeaf(true).openFile(existingAfterCreate);
+        new Notice(`Opened note: ${existingAfterCreate.path}`);
+        return;
+      }
       console.error("Vault returned null for created note", { filePath });
-      new Notice("Failed to create note from card. Check console for details.");
+      new Notice(
+        "Failed to create note. The target path may be excluded in Obsidian settings.",
+      );
       return;
     }
     await app.workspace.getLeaf(true).openFile(file);
@@ -623,13 +631,24 @@ async function ensureNoteFolder(
   folderPath: string,
 ): Promise<boolean> {
   if (!folderPath) return true;
-  const existing = app.vault.getAbstractFileByPath(folderPath);
+  const normalizedPath = normalizePath(folderPath);
+  const existing = app.vault.getAbstractFileByPath(normalizedPath);
   if (!existing) {
     try {
-      await app.vault.createFolder(folderPath);
+      await app.vault.createFolder(normalizedPath);
       return true;
     } catch (error) {
-      console.error("Failed to create note folder", error);
+      if (error instanceof Error && /already exists/i.test(error.message)) {
+        return true;
+      }
+      const existingAfterError =
+        app.vault.getAbstractFileByPath(normalizedPath);
+      if (existingAfterError instanceof TFolder) {
+        return true;
+      }
+      console.error("Failed to create note folder", error, {
+        folderPath: normalizedPath,
+      });
       new Notice("Failed to create note folder. Check console for details.");
       return false;
     }
